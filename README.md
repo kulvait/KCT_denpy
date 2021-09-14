@@ -8,6 +8,11 @@ Normally executing the following shall install the package
 pip3 install git+https://github.com/kulvait/KCT_denpy.git
 ```
 
+Local install from the git directory
+```
+pip3 install --user --upgrade .
+```
+
 Normal user can execute the following
 
 ```
@@ -20,6 +25,11 @@ To update package as a normal user run the following command
 
 ```
 pip3 install --upgrade --user git+https://github.com/kulvait/KCT_denpy.git
+```
+
+Local upgrade from git directory
+```
+pip3 install --user --upgrade .
 ```
 
 ## Directory scripts

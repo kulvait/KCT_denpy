@@ -67,8 +67,8 @@ def storeNdarrayAsDEN(fileName, dataFrame, force=False):
 	shape = dataFrame.shape  # Now len is for sure 3
 	rows = shape[0]
 	columns = shape[1]
-	writeEmptyDEN(fileName, dimx=shape[1], dimy=shape[0], dimz=shape[2],
-				  force=force)	# No effect
+	writeDENHeader(fileName, dimx=shape[1], dimy=shape[0], dimz=shape[2],
+				  force=force)
 	toWrite = dataFrame.astype(np.float32)
 	f = open(fileName, "r+b")
 	for frame in range(shape[2]):
@@ -76,6 +76,65 @@ def storeNdarrayAsDEN(fileName, dataFrame, force=False):
 		newdata = newdata.reshape((rows * columns, ))
 # put header in front of image data
 		f.seek(6 + rows * columns * frame * 4, os.SEEK_SET)
+		f.write(newdata.tobytes())
+	f.close()
+	return True
+
+
+def storeNdarrayAsFloatDEN(fileName, dataFrame, force=False):
+	if not force and os.path.exists(fileName):
+		raise IOError('File already exists, no data written')
+	if not isinstance(dataFrame, np.ndarray):
+		raise TypeError('Object dataFrame has to be of type numpy.array')
+	if len(dataFrame.shape) == 1:
+		print('Dimension = 1, expected >= 2')
+		return False
+	elif len(dataFrame.shape) == 2:
+		dataFrame = np.expand_dims(dataFrame, axis=2)
+	elif len(dataFrame.shape) > 3:
+		raise ValueError(
+			'Dimension of dataFrame should be 2 or 3 but is %d.' % len(dataFrame.shape))
+	shape = dataFrame.shape  # Now len is for sure 3
+	rows = shape[0]
+	columns = shape[1]
+	writeDENHeader(fileName, dimx=shape[1], dimy=shape[0], dimz=shape[2],
+				  force=force)
+	toWrite = dataFrame.astype(np.float32)
+	f = open(fileName, "r+b")
+	for frame in range(shape[2]):
+		newdata = np.array(toWrite[:, :, frame], np.dtype('<f4'))
+		newdata = newdata.reshape((rows * columns, ))
+# put header in front of image data
+		f.seek(6 + rows * columns * frame * 4, os.SEEK_SET)
+		f.write(newdata.tobytes())
+	f.close()
+	return True
+
+def storeNdarrayAsDoubleDEN(fileName, dataFrame, force=False):
+	if not force and os.path.exists(fileName):
+		raise IOError('File already exists, no data written')
+	if not isinstance(dataFrame, np.ndarray):
+		raise TypeError('Object dataFrame has to be of type numpy.array')
+	if len(dataFrame.shape) == 1:
+		print('Dimension = 1, expected >= 2')
+		return False
+	elif len(dataFrame.shape) == 2:
+		dataFrame = np.expand_dims(dataFrame, axis=2)
+	elif len(dataFrame.shape) > 3:
+		raise ValueError(
+			'Dimension of dataFrame should be 2 or 3 but is %d.' % len(dataFrame.shape))
+	shape = dataFrame.shape  # Now len is for sure 3
+	rows = shape[0]
+	columns = shape[1]
+	writeDENHeader(fileName, dimx=shape[1], dimy=shape[0], dimz=shape[2],
+				  force=force)
+	toWrite = dataFrame.astype(np.float64)
+	f = open(fileName, "r+b")
+	for frame in range(shape[2]):
+		newdata = np.array(toWrite[:, :, frame], np.dtype('<f8'))
+		newdata = newdata.reshape((rows * columns, ))
+# put header in front of image data
+		f.seek(6 + rows * columns * frame * 8, os.SEEK_SET)
 		f.write(newdata.tobytes())
 	f.close()
 	return True
@@ -101,6 +160,18 @@ def writeFrame(fileName, k, data, force=False):
 	data.tofile(f)
 	f.close()
 
+
+def writeDENHeader(fileName, dimx, dimy, dimz, force=False):
+	if not force and os.path.exists(fileName):
+		raise IOError('File %s already exists, no header written' % fileName)
+		dimx = np.uint(dimx)
+		dimy = np.uint(dimy)
+		dimz = np.uint(dimz)
+	outfile = open(fileName, "w")
+	header = np.array([dimy, dimx, dimz])
+	header = np.array(header, dtype='<i2')
+	header.tofile(outfile)
+	outfile.close()
 
 def writeEmptyDEN(fileName, dimx, dimy, dimz, force=False):
 	if not force and os.path.exists(fileName):
