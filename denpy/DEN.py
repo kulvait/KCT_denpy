@@ -147,9 +147,10 @@ def writeFrame(fileName, k, data, force=False):
 	if len(shape) != 2:
 		raise ValueError('Dimension of data should be 2 %d.' % len(shape))
 	header = np.fromfile(fileName, np.dtype('<i2'), 3)
-	rows = np.uint64(header[0])
-	columns = np.uint64(header[1])
-	k = np.uint64(k)
+	#Conversion to native python types        
+	rows = np.uint64(header[0]).item()
+	columns = np.uint64(header[1]).item()
+	k = np.uint64(k).item()
 	if shape[0] != rows or shape[1] != columns:
 		raise ValueError('There is dimension mismatch between frame (%d, %d) and expected (rows, cols) = (%d, %d) according to header.' %
 						 (rows, columns, shape[0], shape[1]))
