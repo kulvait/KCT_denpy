@@ -3,7 +3,7 @@
 """
 Creating Shepp-Logan like phantoms in 2D and 3D storing them as DEN
 @author: Vojtěch Kulvait
-(c) 2020
+(c) 2022
 
 Original inspiration for the code is
 https://gist.github.com/blink1073/6e417c726b0dd03d5ea0
@@ -195,6 +195,7 @@ plt.show()
 
 """
 import numpy as np
+import os
 from collections import namedtuple
 from denpy import DEN
 
@@ -202,15 +203,18 @@ Ellipsoid = namedtuple("Ellipsoid", "A a b c x0 y0 z0 phi theta psi")
 Ellipse = namedtuple("Ellipse", "A a b x0 y0 phi")
 
 
-def storePhantom3DAsDEN(fileName, phantom='ToftSchabelKulvait3D', n=512, force=False):
+def storePhantom3DAsDEN(fileName,
+                        phantom='ToftSchabelKulvait3D',
+                        n=512,
+                        force=False):
 	if not force and os.path.exists(fileName):
 		raise IOError('File already exists, no data written')
 	phantom = phantom3d(phantom, n)
-	DEN.storeNdarrayAsDEN(fileName, phantom, n)
+	DEN.storeNdarrayAsDEN(fileName, phantom, force=True)
 
 
 def constructPhantom3D(e3d, n=512):
-	p = np.zeros(n ** 3)
+	p = np.zeros(n**3)
 	rng = np.linspace(-1, 1, n)
 	# The problem with the following is that when we later want to index
 	# x[xind, yind, zind] so that x[xind,:,:] is constant as we apparently do
@@ -222,33 +226,32 @@ def constructPhantom3D(e3d, n=512):
 	# numpy alignment
 	coord = np.vstack((x.flatten(), y.flatten(), z.flatten()))
 	p = p.flatten()
-
 	for e in e3d:
 		phi = np.radians(e.phi)  # first Euler angle in radians
 		theta = np.radians(e.theta)  # second Euler angle in radians
 		psi = np.radians(e.psi)  # third Euler angle in radians
-
 		c1 = np.cos(phi)
 		s1 = np.sin(phi)
 		c2 = np.cos(theta)
 		s2 = np.sin(theta)
 		c3 = np.cos(psi)
 		s3 = np.sin(psi)
-
 		# Euler rotation matrix
 		# Here Matthias Schabel evidently has choosen so called Z1X2Z3 matrix as defined https://en.wikipedia.org/wiki/Euler_angles#Rotation_matrix
 		# Implicit equation for ellipsoid is evaluated in rotated coordinates
 		alpha = np.array(
-			[[ c3 * c1 - c2 * s1 * s3, c3 * s1 + c2 * c1 * s3, s3 * s2],
-			 [-s3 * c1 - c2 * s1 * c3,-s3 * s1 + c2 * c1 * c3, c3 * s2],
-			 [ s2 * s1,               -s2 * c1,                c2]])
-
+		    [[c3 * c1 - c2 * s1 * s3, c3 * s1 + c2 * c1 * s3, s3 * s2],
+		     [-s3 * c1 - c2 * s1 * c3, -s3 * s1 + c2 * c1 * c3, c3 * s2],
+		     [s2 * s1, -s2 * c1, c2]])
 		# rotated ellipsoid coordinates
 		coordp = np.matmul(alpha, coord)
 		ellipsoidCenter = np.array([[e.x0], [e.y0], [e.z0]])
 		ellipsoidSquareHalfaxes = np.array(np.square([[e.a], [e.b], [e.c]]))
 		ellipsoidImplicitResult = np.sum(
-			np.divide(np.square(np.subtract(coordp, ellipsoidCenter)), ellipsoidSquareHalfaxes), axis=0)  # Sum along columns
+		    np.divide(
+		        np.square(np.subtract(coordp, ellipsoidCenter)),
+		        ellipsoidSquareHalfaxes),
+		    axis=0)  # Sum along columns
 		p[ellipsoidImplicitResult <= 1.0] += e.A
 		"""
 		idx = np.nonzero((coordp[0, :] - x0) ** 2.0 / asq +
@@ -258,12 +261,10 @@ def constructPhantom3D(e3d, n=512):
 		"""
 	p = p.reshape(n, n, n)
 	# Here is the problem with default numpy indexing and data alignment, when
-	# we index by [xind,yind] data in [:,:,z] will be stored by column so that
-	# we swap it
-	p = np.swapaxes(p, 0, 1)
-	# Here we changed indexing to [yind, xind, zind] however [:,:,z] will be
-	# stored by row that is used in DEN file so we prepare it for the function
-	# DEN.storeNdarrayAsDEN that expects data in this format
+	# we index by [xind,yind,zind] but in numpy is expected to be indexed by [zind,yind,xind]
+	# so that we swap it
+	p = np.swapaxes(p, 0, 2)
+	# Here we changed indexing to [zind, yind, xind] as expected by DEN.storeNdarrayAsDEN that expects data in this format
 	return p
 
 
@@ -322,22 +323,26 @@ see : http://www.gnu.org/copyleft/gpl.html
 
 
 def printEllipses(e2d, delimiter="\t"):
-	print("A%sa%sb%sx0%sy0%sphi\n" %
-		  (delimiter, delimiter, delimiter, delimiter, delimiter), )
+	print(
+	    "A%sa%sb%sx0%sy0%sphi\n" % (delimiter, delimiter, delimiter, delimiter,
+	                                delimiter),)
 	for ellipse in e2d:
 		print(delimiter.join("% 9.5f" % i for i in ellipse))
 
 
 def printEllipsoids(e3d, delimiter="\t"):
-	print("A%sa%sb%sc%sx0%sy0%sz0%sphi%stheta%spsi\n" %
-		  (delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter), )
+	print(
+	    "A%sa%sb%sc%sx0%sy0%sz0%sphi%stheta%spsi\n" %
+	    (delimiter, delimiter, delimiter, delimiter, delimiter, delimiter,
+	     delimiter, delimiter, delimiter),)
 	for ellipsoid in e3d:
 		print(delimiter.join("% 9.5f" % i for i in ellipsoid))
 
 
 def EllipseToEllipsoid(ellipse):
 	"""Converts Ellipse to Ellipsoid where c=0, z0=0, theta=0, psi=0"""
-	return Ellipsoid(ellipse.A, ellipse.a, ellipse.b, 0.0, ellipse.x0, ellipse.y0, 0.0, ellipse.phi, 0.0, 0.0)
+	return Ellipsoid(ellipse.A, ellipse.a, ellipse.b, 0.0, ellipse.x0,
+	                 ellipse.y0, 0.0, ellipse.phi, 0.0, 0.0)
 
 
 def SheppLogan2D():
@@ -362,24 +367,24 @@ IEEE Transactions on Nuclear Science, Institute of Electrical and Electronics En
 
 def Octave2D():
 	"""Phantom differs from SheppLogan2D in the amplitude of the first ellipse being 1.0 instead of 2.0 and 9th ellipse y0 is -0.606 instead of -0.605"""
-  # The Octave source code of image package states that:
-  #
-  # Note that the first element of this matrix, the gray value for the first
-  # ellipse (human skull), has a value of 1.0 even though the paper gives it a
-  # a value of 2.0 (see Table 1 on page 32 and Figure 1 on page 34). This
-  # change is so that the **head** intensity values appear in the range [0 1]
-  # rather than the range [1 2].
-  #
-  # **The problem with this**
-  #
-  # The background still need an intensity value which is going to be 0. This
-  # means that we can't distinguish between the background and the ventricles
-  # (ellipse "c" and "d" whose intensities are a + b + c and a + b + d, see
-  # Figure 1) since they will have an intensity value of 0 (actually, because
-  # of machine precision the ventricules will be almost 0). But if we didn't
-  # made this change, the ** image** range would be [0 2] with all of the head
-  # details compressed in half of the display range. Also, Matlab seems to be
-  # doing the same.
+	# The Octave source code of image package states that:
+	#
+	# Note that the first element of this matrix, the gray value for the first
+	# ellipse (human skull), has a value of 1.0 even though the paper gives it a
+	# a value of 2.0 (see Table 1 on page 32 and Figure 1 on page 34). This
+	# change is so that the **head** intensity values appear in the range [0 1]
+	# rather than the range [1 2].
+	#
+	# **The problem with this**
+	#
+	# The background still need an intensity value which is going to be 0. This
+	# means that we can't distinguish between the background and the ventricles
+	# (ellipse "c" and "d" whose intensities are a + b + c and a + b + d, see
+	# Figure 1) since they will have an intensity value of 0 (actually, because
+	# of machine precision the ventricules will be almost 0). But if we didn't
+	# made this change, the ** image** range would be [0 2] with all of the head
+	# details compressed in half of the display range. Also, Matlab seems to be
+	# doing the same.
 	e2d = SheppLogan2D()
 	e2d[0] = e2d[0]._replace(A=1.0)
 	e2d[8] = e2d[8]._replace(y0=-0.606)
@@ -467,24 +472,24 @@ ISBN 9780127745602
 	e3d = []
 	e3d.append(Ellipsoid(2.0, 0.69, 0.92, 0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 	e3d.append(
-		Ellipsoid(-0.98, 0.6624, 0.874, 0.88, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+	    Ellipsoid(-0.98, 0.6624, 0.874, 0.88, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
 	e3d.append(
-		Ellipsoid(-0.02, 0.41, 0.16, 0.21, -0.22, 0.0, -0.25, 108.0, 0.0, 0.0))
+	    Ellipsoid(-0.02, 0.41, 0.16, 0.21, -0.22, 0.0, -0.25, 108.0, 0.0, 0.0))
 	e3d.append(
-		Ellipsoid(-0.02, 0.31, 0.11, 0.22, 0.22, 0.0, -0.25, 72.0, 0.0, 0.0))
+	    Ellipsoid(-0.02, 0.31, 0.11, 0.22, 0.22, 0.0, -0.25, 72.0, 0.0, 0.0))
 	e3d.append(
-		Ellipsoid(0.02, 0.21, 0.25, 0.5, 0.0, 0.35, -0.25, 0.0, 0.0, 0.0))
-			   #Unsure about this
+	    Ellipsoid(0.02, 0.21, 0.25, 0.5, 0.0, 0.35, -0.25, 0.0, 0.0, 0.0))
+	#Unsure about this
 	e3d.append(
-		Ellipsoid(0.02, 0.046, 0.046, 0.046, 0.0, 0.1, -0.25, 0.0, 0.0, 0.0))
+	    Ellipsoid(0.02, 0.046, 0.046, 0.046, 0.0, 0.1, -0.25, 0.0, 0.0, 0.0))
 	e3d.append(
-		Ellipsoid(0.01, 0.046, 0.023, 0.02, -0.08, -0.65, -0.25, 0.0, 0.0, 0.0))
+	    Ellipsoid(0.01, 0.046, 0.023, 0.02, -0.08, -0.65, -0.25, 0.0, 0.0, 0.0))
 	e3d.append(
-		Ellipsoid(0.01, 0.046, 0.023, 0.02, 0.06, -0.65, -0.25, 90.0, 0.0, 0.0))
+	    Ellipsoid(0.01, 0.046, 0.023, 0.02, 0.06, -0.65, -0.25, 90.0, 0.0, 0.0))
 	e3d.append(
-		Ellipsoid(0.02, 0.056, 0.04, 0.1, 0.06, -0.105, 0.625, 90.0, 0.0, 0.0))
+	    Ellipsoid(0.02, 0.056, 0.04, 0.1, 0.06, -0.105, 0.625, 90.0, 0.0, 0.0))
 	e3d.append(
-		Ellipsoid(-0.02, 0.056, 0.056, 0.1, 0.0, 0.1, 0.625, 0.0, 0.0, 0.0))
+	    Ellipsoid(-0.02, 0.056, 0.056, 0.1, 0.0, 0.1, 0.625, 0.0, 0.0, 0.0))
 	return e3d
 
 

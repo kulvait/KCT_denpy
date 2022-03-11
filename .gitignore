@@ -1,1 +1,3 @@
 *.pic
+__pycache__
+denpy.egg-info
