@@ -166,9 +166,9 @@ def writeEmptyDEN(fileName,
 	writeExtendedHeader(fileName, dimspec, elementtype, ymajor, force)
 	fileSize = 4096 + np.prod(dimspec) * elementtype.itemsize
 	f = open(fileName, "r+b")
-	outfile.seek(fileSize - 1)
-	outfile.write('\0')
-	outfile.close()
+	f.seek(fileSize - 1)
+	f.write(b'\x00')
+	f.close()
 
 
 def denDataTypeToNpDtype(typeID):
