@@ -24,7 +24,7 @@ import os
 # col_from is the first col index
 # col_to is not included
 def getFrame(fileName,
-             i,
+             k,
              row_from=None,
              row_to=None,
              col_from=None,
@@ -43,15 +43,27 @@ def getFrame(fileName,
 	f = open(fileName, "rb")
 	#For more than 3D arrays
 	if info["dimcount"] > 3:
-		if len(i) != info["dimcount"] - 2:
+		if len(k) != info["dimcount"] - 2:
 			raise TypeError("Index must be a list of dimension %d!" %
 			                (info["dimcount"] - 2))
-		i = np.prod(i)
-	offset = info["offset"] + rows * columns * info["elementbytesize"] * i
+		dim = info["dimspec"][2:]
+		blockIncrement = 1
+		zindex = 0;
+		for i in ind:
+			zindex = zindex + k[i]*blockIncrement
+			blockIncrement = blockIncrement * dim[i]
+	else:
+		zindex = k
+	offset = info["offset"] + rows * columns * info["elementbytesize"] * zindex
 	f.seek(offset, os.SEEK_SET)
 	data = np.fromfile(f, dtype=info["type"], count=rows * columns)
-	newdata = data.reshape((rows, columns))
-	newdata = newdata[row_from:row_to, col_from:col_to]
+	if info["majority"] == 0:
+		newdata = data.reshape((rows, columns))
+		newdata = newdata[row_from:row_to, col_from:col_to]
+	else:
+		newdata = data.reshape((columns, rows))
+		newdata = np.transpose(newdata)
+		newdata = newdata[row_from:row_to, col_from:col_to]
 	return (newdata)
 
 
@@ -89,8 +101,18 @@ def getNumpyArray(fileName):
 	info = readHeader(fileName)
 	f = open(fileName, "rb")
 	f.seek(info["offset"], os.SEEK_SET)
-	data = np.fromfile(f, dtype=info["type"], count=np.prod(info["shape"]))
-	data = data.reshape(info["shape"])
+	if info["majority"] == 0:
+		data = np.fromfile(f, dtype=info["type"], count=np.prod(info["shape"]))
+		data = data.reshape(info["shape"])
+	else:
+		data = np.zeros(np.prod(info["shape"]))
+		dimspec = info["dimspec"]
+		dimx = dimspec[0]
+		dimy = dimspec[1]
+		dimzextended = np.prod(info["dimspec"][2:])
+		data = data.reshape((dimzextended, dimy, dimx))
+		for i in range(dimzextended):
+			data[i] = getFrame(fileName, i)
 	return (data)
 
 
@@ -113,7 +135,7 @@ def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 		f.write(dataFrame.tobytes())
 	elif ymajor == 1 and len(dataFrame) > 1:
 		if len(dataFrame) == 2:
-			f.write(dataFrame.tobytes(), order="F")
+			f.write(dataFrame.tobytes(order="F"))
 		else:
 			#Get flat index for better manipulation
 			dataFrame.shape = (np.prod(dataFrame.shape[:-2]),
@@ -123,7 +145,7 @@ def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 				newdata = np.array(dataFrame[k])
 				seekoffset = offset + frameSize * dataFrame.dtype.itemsize * k
 				f.seek(seekoffset, os.SEEK_SET)
-				f.write(newdata.tobytes(), order="F")
+				f.write(newdata.tobytes(order="F"))
 	else:
 		f.close()
 		raise TypeError(
@@ -257,6 +279,7 @@ def readHeader(fileName):
 		par["offset"] = 6
 		par["dimcount"] = 3
 		par["legacy"] = 1
+		par["majority"] = 0 #xmajor
 		par["elementscount"] = np.prod(par["shape"])
 		elementscount = par["elementscount"]
 		dataSize = par["size"] - 6
