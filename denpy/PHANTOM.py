@@ -187,12 +187,25 @@ The logic of rotations by theta and psi angles is taken from the code of Matthia
 
 
 Example use:
+from denpy import PHANTOM
+from denpy import DEN
 from matplotlib import pyplot as plt
 
-p = phantom3d(n=256)
+p = PHANTOM.phantom3d(n=256)
 plt.imshow(p[:, :, 128], origin="lower")
 plt.show()
 
+#Exporting to DEN as FLOAT64
+PHANTOM.storePhantom3DAsDEN("ToftSchabelKulvait3D_512.vol", phantom='ToftSchabelKulvait3D', n=512)
+
+
+#Exporting to DEN as FLOAT32
+from denpy import PHANTOM
+from denpy import DEN
+import numpy as np
+p = PHANTOM.phantom3d(phantom='ToftSchabelKulvait3D', n=512)
+p = p.astype(np.float32)
+DEN.storeNdarrayAsDEN("ToftSchabelKulvait3D_512.vol", p, force=True)
 """
 import numpy as np
 import os
