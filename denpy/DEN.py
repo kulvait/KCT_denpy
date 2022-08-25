@@ -115,13 +115,12 @@ def getNumpyArray(fileName):
 			data[i] = getFrame(fileName, i)
 	return (data)
 
-
 def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 	if not force and os.path.exists(fileName):
 		raise IOError('File already exists, no data written')
 	if not isinstance(dataFrame, np.ndarray):
 		raise TypeError('Object dataFrame has to be of type numpy.array')
-	dimspec = np.flip(dataFrame.shape)
+	dimspec = np.flip(dataFrame.shape, axis=0)
 	writeExtendedHeader(
 	    fileName,
 	    dimspec,
