@@ -5,7 +5,7 @@ from setuptools import setup
 #Look here https://stackoverflow.com/questions/458550/standard-way-to-embed-version-into-python-package
 exec(open('denpy/version.py').read())
 
-petra_requires = ['h5py', 'pandas', 'bisect']
+petra_requires = ['h5py', 'pandas']
 
 setup(
     # Needed to silence warnings (and to be a worthwhile package)
