@@ -16,7 +16,7 @@ from bisect import bisect_left
 def _insertToDf(df, dat, name):
 	time=dat["%s/time"%(name)]
 	value=dat["%s/value"%(name)]
-	if name == "image_file":
+	if name == "image_file" and h5py.__version__.startswith("3"):
 		value = value.asstr()
 	for i in range(len(value)):
 		t=time[i]
