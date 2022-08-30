@@ -5,19 +5,21 @@ from setuptools import setup
 #Look here https://stackoverflow.com/questions/458550/standard-way-to-embed-version-into-python-package
 exec(open('denpy/version.py').read())
 
+petra_requires = ['h5py', 'pandas', 'bisect']
+
 setup(
     # Needed to silence warnings (and to be a worthwhile package)
     name='denpy',
     url='https://github.com/kulvait/KCT_denpy',
     author='Vojtech Kulvait',
-    author_email='vojtech.kulvait@ovgu.de',
+    author_email='vojtech.kulvait@hereon.de',
     # Needed to actually package something
     packages=['denpy'],
     # Needed for dependencies
-    install_requires=['numpy','pydicom'],
+    install_requires=['numpy','pydicom'] + petra_requires,
     # *strongly* suggested for sharing
     version=__version__,
     # The license can be anything you like
     license='GPL3',
-    description='Python package for DEN and DICOM processing for perfusion vizualization.',
+    description='Python package for processing various tomographic data and DEN format.',
 )
