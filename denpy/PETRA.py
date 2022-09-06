@@ -10,6 +10,7 @@ Processing of h5 format used to output Petra III data
 """
 import h5py
 import pandas as pd
+import numpy as np
 from bisect import bisect_left
 
 
@@ -25,17 +26,18 @@ def _insertToDf(df, dat, name):
 
 def beamCurrentDataset(h5file):
 	h5 = h5py.File(h5file, 'r')
-	timeIndex = filter(lambda t: t!= 0, list(h5["entry/hardware/beam_current/current/time"]))
-	df = pd.DataFrame(columns=["time", "current"], index=timeIndex)
-	for ind in df.index:
-		df.loc[ind]["time"] = pd.to_datetime(ind, unit="ms")
-	time = h5["entry/hardware/beam_current/current/time"]
-	value = h5["entry/hardware/beam_current/current/value"]
-	for i in range(len(value)):
-		t = time[i]
-		v = value[i]
-		if t != 0:
-			df.loc[t]["current"] = v 
+	ID = list(h5["entry/hardware/beam_current/current/time"])
+	time = list(pd.to_datetime(i, unit="ms") for i in ID)
+	value = list(h5["entry/hardware/beam_current/current/value"])
+	agg = list(zip(time, value))
+	df = pd.DataFrame(agg, columns=["time", "current"], index = ID)
+	#There were duplicates caused problems
+	#https://stackoverflow.com/questions/13035764/remove-pandas-rows-with-duplicate-indices
+	df = df[~df.index.duplicated(keep='first')]
+	#Remove zero index https://stackoverflow.com/questions/13851535/how-to-delete-rows-from-a-pandas-dataframe-based-on-a-conditional-expression
+	df.drop(df[df.index == 0].index, inplace=True)
+	#Need to sort it for interpolation to work
+	df.sort_index(inplace=True)
 	return df
 
 def scanDataset(h5file):
@@ -60,5 +62,9 @@ def scanDataset(h5file):
 			t1 = float(currentFrame.index[posAfterEq])
 			cur1 = float(currentFrame.iloc[posAfterEq]["current"])
 			t = float(ind)
-			df.loc[ind]["current"] = cur0 + ((t-t0)/(t1-t0))*(cur1-cur0)
+			cur = cur0 + ((t-t0)/(t1-t0))*(cur1-cur0)
+			if np.isnan(cur):
+				print("Cur is NaN t0=%f cur0=%f t1=%f cur1=%f t=%f ind=%d posAfterEq=%d len(currentFrame)=%d!"%(t0, cur0, t1, cur1, t, ind, posAfterEq, len(currentFrame)))
+				raise ValueError("Interpolation error producing NaN beam curent.")
+			df.loc[ind]["current"] = cur
 	return df
