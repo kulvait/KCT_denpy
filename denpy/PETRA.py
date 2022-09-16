@@ -54,7 +54,9 @@ def scanDataset(h5file):
 	currentFrame = beamCurrentDataset(h5file)
 	for ind in df.index:
 		posAfterEq = bisect_left(currentFrame.index, ind)
-		if posAfterEq == 0 or posAfterEq == len(df.index) or currentFrame.index[posAfterEq] == ind:
+		if posAfterEq == len(currentFrame.index):
+			df.loc[ind]["current"] = currentFrame.iloc[posAfterEq-1]["current"]
+		elif posAfterEq == 0 or currentFrame.index[posAfterEq] == ind:
 			df.loc[ind]["current"] = currentFrame.iloc[posAfterEq]["current"]
 		else:
 			t0 = float(currentFrame.index[posAfterEq-1])
