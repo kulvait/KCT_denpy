@@ -88,7 +88,7 @@ def writeFrame(fileName, k, data, force=False):
 		k = np.prod(k)
 	f = open(fileName, "r+b")
 	if info["type"] != data.dtype:
-		raise TypeError("Type mismatch.")
+		raise TypeError("Type mismatch between type of DEN %s and type of np.frame %s."%(info["type"], data.dtype))
 	data = data.reshape((rows * columns,))
 	offset = info["offset"] + rows * columns * info["elementbytesize"] * k
 	f.seek(offset, os.SEEK_SET)
@@ -185,9 +185,10 @@ def writeEmptyDEN(fileName,
 	if not force and os.path.exists(fileName):
 		raise IOError('File %s already exists, no header written' % fileName)
 	writeExtendedHeader(fileName, dimspec, elementtype, ymajor, force)
-	fileSize = 4096 + np.prod(dimspec) * elementtype.itemsize
+	fileSize = 4096 + np.uint64(np.prod(dimspec)) * elementtype.itemsize
+	filesize = np.uint64(fileSize)
 	f = open(fileName, "r+b")
-	f.seek(fileSize - 1)
+	f.seek(int(fileSize - 1))
 	f.write(b'\x00')
 	f.close()
 

@@ -23,7 +23,7 @@ def writeParamsFile(params, f):
 	with open(f, "w") as p:
 		p.write("#!/bin/bash")
 		p.write("\n")
-		kx = params.keys()
+		kx = list(params.keys())
 		kx.sort()
 		for k in kx:
 			p.write("%s=%s"%(str(k), str(params[k])))

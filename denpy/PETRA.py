@@ -19,6 +19,8 @@ def _insertToDf(df, dat, name):
 	value=dat["%s/value"%(name)]
 	if name == "image_file" and h5py.__version__.startswith("3"):
 		value = value.asstr()
+	if len(time) != len(value):
+		raise IOError("len(time)=%d len(value)=%d for entry %s"%(len(time), len(value), name))
 	for i in range(len(value)):
 		t=time[i]
 		v=value[i]
@@ -50,7 +52,11 @@ def scanDataset(h5file):
 	for ind in df.index:
 		df.loc[ind]["time"] = pd.to_datetime(ind, unit="ms")
 	for lab in labels:
-		_insertToDf(df, data, lab)
+		try:
+			_insertToDf(df, data, lab)
+		except IOError:
+			print("IOError processing %s"%h5file)
+			raise
 	currentFrame = beamCurrentDataset(h5file)
 	for ind in df.index:
 		posAfterEq = bisect_left(currentFrame.index, ind)
