@@ -74,12 +74,12 @@ def writeFrame(fileName, k, data, force=False):
 	if len(shape) != 2:
 		raise ValueError('Dimension of data should be 2 %d.' % len(shape))
 	info = readHeader(fileName)
-	columns = info["shape"][-1]
-	rows = info["shape"][-2]
-	if shape[0] != rows or shape[1] != columns:
+	dimx = info["shape"][-1]
+	dimy = info["shape"][-2]
+	if shape[0] != dimy or shape[1] != dimx:
 		raise ValueError(
-		    'There is dimension mismatch between frame (%d, %d) and expected (rows, cols) = (%d, %d) according to header.'
-		    % (rows, columns, shape[0], shape[1]))
+		    'When processing %s there is dimension mismatch between file (dimy, dimx)=(%d, %d) and frame to be stored shape=(dimy, dimx)=(%d, %d).'
+		    % (fileName, dimy, dimx, shape[0], shape[1]))
 	#For more than 3D arrays
 	if info["dimcount"] > 3:
 		if len(k) != info["dimcount"] - 2:
@@ -89,8 +89,8 @@ def writeFrame(fileName, k, data, force=False):
 	f = open(fileName, "r+b")
 	if info["type"] != data.dtype:
 		raise TypeError("Type mismatch between type of DEN %s and type of np.frame %s."%(info["type"], data.dtype))
-	data = data.reshape((rows * columns,))
-	offset = info["offset"] + rows * columns * info["elementbytesize"] * k
+	data = data.reshape((dimx * dimy,))
+	offset = info["offset"] + dimx * dimy * info["elementbytesize"] * k
 	f.seek(offset, os.SEEK_SET)
 	f.write(data.tobytes())
 	f.close()
