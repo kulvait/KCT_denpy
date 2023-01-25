@@ -24,7 +24,10 @@ def _insertToDf(df, dat, name):
 	for i in range(len(value)):
 		t=time[i]
 		v=value[i]
-		df.loc[t][name]=v
+		if t in df.index:
+			df.loc[t][name]=v
+		else:
+			raise IOError("Can not insert value=%s into the column=%s because related time=%s is not in index"%(v, name, t))
 
 def beamCurrentDataset(h5file):
 	h5 = h5py.File(h5file, 'r')
@@ -48,9 +51,10 @@ def scanDataset(h5file):
 	labels = list(data.keys())
 	if len(labels) < 1:
 		sys.exit("Error: labels count is %d!"%(labels.count))
-	df = pd.DataFrame(columns=labels+["current", "time"], index=list(data["%s/time"%(labels[0])][()]))
+	#There always shall be image_key entry
+	df = pd.DataFrame(columns=labels+["current", "time"], index=list(data["image_key/time"]))
 	for ind in df.index:
-		df.loc[ind]["time"] = pd.to_datetime(ind, unit="ms")
+		df.loc[ind, "time"] = pd.to_datetime(ind, unit="ms")
 	for lab in labels:
 		try:
 			_insertToDf(df, data, lab)
