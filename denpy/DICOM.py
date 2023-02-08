@@ -14,6 +14,21 @@ import glob
 import os
 import pydicom
 
+# https://stackoverflow.com/questions/46304306/how-to-generate-unique-dicom-uid
+def generateRandomUID(prefix = None):
+	import uuid
+	id128 = uuid.uuid4().int
+	if prefix is None:
+		return  "2.25.%d"%(id128)
+	else:
+		prefix = str(prefix)
+		prefixlen = len(prefix)
+		suffixlen = 64 - prefixlen
+		suffix = "%d"%id128
+		suffix = suffix[:suffixlen]
+		uid = "%s%s"%(prefix, suffix)[:64]
+		return uid
+
 # In dicom the time is encoded by type TM
 # A string of characters of the format HHMMSS.FFFFFF; where HH contains
 # hours (range "00" - "23"), MM contains minutes (range "00" - "59"), SS
@@ -23,12 +38,13 @@ import pydicom
 # only "0000" since "2400" would violate the hour range. The string may be
 # padded with trailing spaces. Leading and embedded spaces are not
 # allowed.
-
-
 def timeToSeconds(timestring):
 	import datetime
 	timestring = timestring.strip();
-	dt = datetime.datetime.strptime(timestring, "%H%M%S.%f")
+	if "." in timestring:
+		dt = datetime.datetime.strptime(timestring, "%H%M%S.%f")
+	else:
+		dt = datetime.datetime.strptime(timestring, "%H%M%S")
 	ddt = dt - datetime.datetime(1900, 1, 1)
 	return(ddt.total_seconds())
 
@@ -52,7 +68,10 @@ def datetimeToSeconds(datetimestring):
 	if datetimestring.find("&") != -1:	# Remove all after
 		datetimestring = datetimestring[:datetimestring.find("&")]
 	import datetime
-	dt = datetime.datetime.strptime(datetimestring, "%Y%m%d%H%M%S.%f")
+	if "." in datetimestring:
+		dt = datetime.datetime.strptime(datetimestring, "%Y%m%d%H%M%S.%f")
+	else:
+		dt = datetime.datetime.strptime(datetimestring, "%Y%m%d%H%M%S")
 	ddt = dt - datetime.datetime(1900, 1, 1)
 	return(ddt.total_seconds())
 
