@@ -3,7 +3,7 @@
 """
 Creating Shepp-Logan like phantoms in 2D and 3D storing them as DEN
 @author: Vojtěch Kulvait
-(c) 2022
+(c) 2023
 
 Original inspiration for the code is
 https://gist.github.com/blink1073/6e417c726b0dd03d5ea0
@@ -206,6 +206,8 @@ import numpy as np
 p = PHANTOM.phantom3d(phantom='ToftSchabelKulvait3D', n=512)
 p = p.astype(np.float32)
 DEN.storeNdarrayAsDEN("ToftSchabelKulvait3D_512.vol", p, force=True)
+
+Added code to create gauss shaped phantom.
 """
 import numpy as np
 import os
@@ -277,7 +279,7 @@ def constructPhantom3D(e3d, n=512):
 	# we index by [xind,yind,zind] but in numpy is expected to be indexed by [zind,yind,xind]
 	# so that we swap it
 	p = np.swapaxes(p, 0, 2)
-	# Here we changed indexing to [zind, yind, xind] as expected by DEN.storeNdarrayAsDEN that expects data in this format
+	# Here we changed DEN.storeNdarrayAsDEN(fileName, phantom, force=True)indexing to [zind, yind, xind] as expected by DEN.storeNdarrayAsDEN that expects data in this format
 	return p
 
 
@@ -556,3 +558,13 @@ def ToftSchabelKulvait3D():
 	e3d[5] = e3d[5]._replace(z0=0.0)
 	e3d[6] = e3d[6]._replace(z0=0.0)
 	return e3d
+
+def construct2DGaussianDecay(centerx=256, centery=256, sigmax=5, sigmay=5, sizex=512, sizey=512, sizez=512):
+	x = np.zeros(shape=(sizey, sizex), dtype=np.float32)
+	factor = 1/(2*np.pi*(sigmax*sigmay))
+	twosigmaxsquared = float(2*sigmax*sigmax)
+	twosigmaysquared = float(2*sigmax*sigmax)
+	for i in range(sizex):
+		for j in range(sizey):
+			x[j,i] = factor * np.exp((-float(i-centerx)**2/twosigmaxsquared-float(j-centery)**2/twosigmaysquared))
+	return np.tile(x, (sizez, 1, 1))
