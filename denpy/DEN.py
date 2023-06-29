@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Created on Wed Sep 12 18:23:46 2018
@@ -72,7 +72,7 @@ def writeFrame(fileName, k, data, force=False):
 		raise IOError('File %s already exists, no header written' % fileName)
 	shape = data.shape
 	if len(shape) != 2:
-		raise ValueError('Dimension of data should be 2 %d.' % len(shape))
+		raise ValueError('len(data.shape)==%d!=2 when inserting %d-th frame to file %s.' % (len(shape), k, fileName))
 	info = readHeader(fileName)
 	dimx = info["shape"][-1]
 	dimy = info["shape"][-2]
@@ -117,7 +117,7 @@ def getNumpyArray(fileName):
 
 def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 	if not force and os.path.exists(fileName):
-		raise IOError('File already exists, no data written')
+		raise IOError('Filei %s already exists, no data written, add force=True to overwrite.', fileName)
 	if not isinstance(dataFrame, np.ndarray):
 		raise TypeError('Object dataFrame has to be of type numpy.array')
 	dimspec = np.flip(dataFrame.shape, axis=0)
@@ -159,7 +159,8 @@ def writeExtendedHeader(fileName,
                         ymajor=0,
                         force=False):
 	if not force and os.path.exists(fileName):
-		raise IOError('File %s already exists, no header written' % fileName)
+		err = 'File %s already exists, no header written' % fileName
+		raise IOError(err)
 	#Create empty file
 	f = open(fileName, "wb")
 	f.seek(4095)
@@ -183,7 +184,8 @@ def writeEmptyDEN(fileName,
                   ymajor=0,
                   force=False):
 	if not force and os.path.exists(fileName):
-		raise IOError('File %s already exists, no header written' % fileName)
+		err = 'File %s already exists, no header written' % (fileName)
+		raise IOError(err)
 	writeExtendedHeader(fileName, dimspec, elementtype, ymajor, force)
 	fileSize = 4096 + np.uint64(np.prod(dimspec)) * elementtype.itemsize
 	filesize = np.uint64(fileSize)

@@ -45,14 +45,17 @@ def beamCurrentDataset(h5file):
 	df.sort_index(inplace=True)
 	return df
 
-def scanDataset(h5file):
+def scanDataset(h5file, includeCurrent = True):
 	h5 = h5py.File(h5file, 'r')
 	data = h5["entry/scan/data"]
 	labels = list(data.keys())
 	if len(labels) < 1:
 		sys.exit("Error: labels count is %d!"%(labels.count))
 	#There always shall be image_key entry
-	df = pd.DataFrame(columns=labels+["current", "time"], index=list(data["image_key/time"]))
+	if includeCurrent:
+		df = pd.DataFrame(columns=labels+["current", "time"], index=list(data["image_key/time"]))
+	else:
+		df = pd.DataFrame(columns=labels+["time"], index=list(data["image_key/time"]))
 	for ind in df.index:
 		df.loc[ind, "time"] = pd.to_datetime(ind, unit="ms")
 	for lab in labels:
@@ -61,22 +64,30 @@ def scanDataset(h5file):
 		except IOError:
 			print("IOError processing %s"%h5file)
 			raise
-	currentFrame = beamCurrentDataset(h5file)
-	for ind in df.index:
-		posAfterEq = bisect_left(currentFrame.index, ind)
-		if posAfterEq == len(currentFrame.index):
-			df.loc[ind]["current"] = currentFrame.iloc[posAfterEq-1]["current"]
-		elif posAfterEq == 0 or currentFrame.index[posAfterEq] == ind:
-			df.loc[ind]["current"] = currentFrame.iloc[posAfterEq]["current"]
-		else:
-			t0 = float(currentFrame.index[posAfterEq-1])
-			cur0 = float(currentFrame.iloc[posAfterEq-1]["current"])
-			t1 = float(currentFrame.index[posAfterEq])
-			cur1 = float(currentFrame.iloc[posAfterEq]["current"])
-			t = float(ind)
-			cur = cur0 + ((t-t0)/(t1-t0))*(cur1-cur0)
-			if np.isnan(cur):
-				print("Cur is NaN t0=%f cur0=%f t1=%f cur1=%f t=%f ind=%d posAfterEq=%d len(currentFrame)=%d!"%(t0, cur0, t1, cur1, t, ind, posAfterEq, len(currentFrame)))
-				raise ValueError("Interpolation error producing NaN beam curent.")
-			df.loc[ind]["current"] = cur
+	if includeCurrent:
+		currentFrame = beamCurrentDataset(h5file)
+		for ind in df.index:
+			posAfterEq = bisect_left(currentFrame.index, ind)
+			if posAfterEq == len(currentFrame.index):
+				df.loc[ind]["current"] = currentFrame.iloc[posAfterEq-1]["current"]
+			elif posAfterEq == 0 or currentFrame.index[posAfterEq] == ind:
+				df.loc[ind]["current"] = currentFrame.iloc[posAfterEq]["current"]
+			else:
+				t0 = float(currentFrame.index[posAfterEq-1])
+				cur0 = float(currentFrame.iloc[posAfterEq-1]["current"])
+				t1 = float(currentFrame.index[posAfterEq])
+				cur1 = float(currentFrame.iloc[posAfterEq]["current"])
+				t = float(ind)
+				cur = cur0 + ((t-t0)/(t1-t0))*(cur1-cur0)
+				if np.isnan(cur):
+					print("Cur is NaN t0=%f cur0=%f t1=%f cur1=%f t=%f ind=%d posAfterEq=%d len(currentFrame)=%d!"%(t0, cur0, t1, cur1, t, ind, posAfterEq, len(currentFrame)))
+					raise ValueError("Interpolation error producing NaN beam curent.")
+				df.loc[ind]["current"] = cur
+	df = df.sort_values("time")
 	return df
+
+def imageDataset(h5file, image_key=0, includeCurrent = True):
+	df = scanDataset(h5file, includeCurrent)
+	df = df.loc[df["image_key"]==image_key]
+	return df.assign(frame_ind=np.arange(len(df)))
+
