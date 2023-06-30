@@ -86,8 +86,16 @@ def scanDataset(h5file, includeCurrent = True):
 	df = df.sort_values("time")
 	return df
 
-def imageDataset(h5file, image_key=0, includeCurrent = True):
+def imageDataset(h5file, image_key=0, includeCurrent = True, includePixelShift = False):
 	df = scanDataset(h5file, includeCurrent)
 	df = df.loc[df["image_key"]==image_key]
-	return df.assign(frame_ind=np.arange(len(df)))
+	df = df.assign(frame_ind=np.arange(len(df)))
+	if includePixelShift:
+		h5 = h5py.File(h5file, 'r')
+		pix_size_cam = float(h5["entry/hardware/camera1/pixelsize"][0])
+		pix_size_mag = float(h5["entry/hardware/camera1/magnification"][0])
+		pix_size = float(pix_size_cam/pix_size_mag)
+		pixShifts = (df["s_stage_x"] - df["s_stage_x"].iloc[0])/pix_size
+		df = df.assign(pixel_shift=pixShifts)
+	return df
 
