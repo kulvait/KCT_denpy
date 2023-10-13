@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Wed Sep 12 18:23:46 2018
+Created 2022-2023
 
 Processing of h5 format used to output Petra III data
 
@@ -92,8 +92,14 @@ def imageDataset(h5file, image_key=0, includeCurrent = True, includePixelShift =
 	df = df.assign(frame_ind=np.arange(len(df)))
 	if includePixelShift:
 		h5 = h5py.File(h5file, 'r')
-		pix_size_cam = float(h5["entry/hardware/camera1/pixelsize"][0])
-		pix_size_mag = float(h5["entry/hardware/camera1/magnification"][0])
+		if "/entry/hardware/camera1" in h5: 
+			cam = "camera1"
+		elif "/entry/hardware/camera" in h5: 
+			cam = "camera"
+		else:
+			raise ValueError("There is no entry/hardware/camera or entry/hardware/camera1 entry in %s."%info["h5"])
+		pix_size_cam = float(h5["entry/hardware/%s/pixelsize"%cam][0])
+		pix_size_mag = float(h5["entry/hardware/%s/magnification"%cam][0])
 		pix_size = float(pix_size_cam/pix_size_mag)
 		pixShifts = (df["s_stage_x"] - df["s_stage_x"].iloc[0])/pix_size
 		df = df.assign(pixel_shift=pixShifts)
