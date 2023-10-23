@@ -86,7 +86,7 @@ def scanDataset(h5file, includeCurrent = True):
 	df = df.sort_values("time")
 	return df
 
-def imageDataset(h5file, image_key=0, includeCurrent = True, includePixelShift = False):
+def imageDataset(h5file, image_key=0, includeCurrent = True, includePixelShift = False, overrideMagnification=None):
 	df = scanDataset(h5file, includeCurrent)
 	df = df.loc[df["image_key"]==image_key]
 	df = df.assign(frame_ind=np.arange(len(df)))
@@ -99,7 +99,10 @@ def imageDataset(h5file, image_key=0, includeCurrent = True, includePixelShift =
 		else:
 			raise ValueError("There is no entry/hardware/camera or entry/hardware/camera1 entry in %s."%info["h5"])
 		pix_size_cam = float(h5["entry/hardware/%s/pixelsize"%cam][0])
-		pix_size_mag = float(h5["entry/hardware/%s/magnification"%cam][0])
+		if overrideMagnification is not None:
+			pix_size_mag = overrideMagnification
+		else:
+			pix_size_mag = float(h5["entry/hardware/%s/magnification"%cam][0])
 		pix_size = float(pix_size_cam/pix_size_mag)
 		pixShifts = (df["s_stage_x"] - df["s_stage_x"].iloc[0])/pix_size
 		df = df.assign(pixel_shift=pixShifts)
