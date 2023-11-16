@@ -104,7 +104,10 @@ def imageDataset(h5file, image_key=0, includeCurrent = True, includePixelShift =
 		else:
 			pix_size_mag = float(h5["entry/hardware/%s/magnification"%cam][0])
 		pix_size = float(pix_size_cam/pix_size_mag)
-		pixShifts = (df["s_stage_x"] - df["s_stage_x"].iloc[0])/pix_size
+		#zeropos = df["s_stage_x"].iloc[0]#Previous
+		zeropos = 0.5 * (df["s_stage_x"].max() +  df["s_stage_x"].min())
+		#print("p0 =%f min=%f max=%f zeropos=%f pix_size=%f"%(df["s_stage_x"].iloc[0], df["s_stage_x"].min(), df["s_stage_x"].max(), zeropos, pix_size))
+		pixShifts = (df["s_stage_x"] - zeropos)/pix_size
 		df = df.assign(pixel_shift=pixShifts)
 	return df
 

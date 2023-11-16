@@ -117,7 +117,7 @@ def getNumpyArray(fileName):
 
 def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 	if not force and os.path.exists(fileName):
-		raise IOError('Filei %s already exists, no data written, add force=True to overwrite.', fileName)
+		raise IOError('File %s already exists, no data written, add force=True to overwrite.'%(fileName))
 	if not isinstance(dataFrame, np.ndarray):
 		raise TypeError('Object dataFrame has to be of type numpy.array')
 	dimspec = np.flip(dataFrame.shape, axis=0)
