@@ -83,7 +83,7 @@ def scanDataset(h5file, includeCurrent = True):
 					print("Cur is NaN t0=%f cur0=%f t1=%f cur1=%f t=%f ind=%d posAfterEq=%d len(currentFrame)=%d!"%(t0, cur0, t1, cur1, t, ind, posAfterEq, len(currentFrame)))
 					raise ValueError("Interpolation error producing NaN beam curent.")
 				df.loc[ind]["current"] = cur
-	df = df.sort_values("time")
+	df = df.sort_values("time", ascending=True)
 	return df
 
 def imageDataset(h5file, image_key=0, includeCurrent = True, includePixelShift = False, overrideMagnification=None):

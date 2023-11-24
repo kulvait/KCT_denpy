@@ -28,7 +28,8 @@ def getFrame(fileName,
              row_from=None,
              row_to=None,
              col_from=None,
-             col_to=None):
+             col_to=None,
+             dtype=None):
 	info = readHeader(fileName)
 	columns = info["shape"][-1]
 	rows = info["shape"][-2]
@@ -64,6 +65,8 @@ def getFrame(fileName,
 		newdata = data.reshape((columns, rows))
 		newdata = np.transpose(newdata)
 		newdata = newdata[row_from:row_to, col_from:col_to]
+	if dtype is not None and dtype != info["type"]:
+		newdata = np.array(newdata, dtype=dtype)
 	return (newdata)
 
 
@@ -277,7 +280,7 @@ def readHeader(fileName):
 		)  #see https://stackoverflow.com/questions/9452775/converting-numpy-dtypes-to-native-python-types
 		par["zdim"] = np.uint32(header[2]).item()
 		par["shape"] = (par["h2"], par["h0"], par["h1"])  #(dimz, dimy, dimx)
-		par["dimspec"] = (par["h1"], par["h0"], par["h2"])  #(dimz, dimy, dimx)
+		par["dimspec"] = (par["h1"], par["h0"], par["h2"])  #(dimx, dimy, dimz)
 		par["offset"] = 6
 		par["dimcount"] = 3
 		par["legacy"] = 1
