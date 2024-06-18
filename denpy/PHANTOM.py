@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python
+#-*- coding: utf-8 -*-
 """
 Creating Shepp-Logan like phantoms in 2D and 3D storing them as DEN
 @author: Vojtěch Kulvait
@@ -262,11 +262,10 @@ def constructPhantom3D(e3d, n=512):
 		coordp = np.matmul(alpha, coord)
 		ellipsoidCenter = np.array([[e.x0], [e.y0], [e.z0]])
 		ellipsoidSquareHalfaxes = np.array(np.square([[e.a], [e.b], [e.c]]))
-		ellipsoidImplicitResult = np.sum(
-		    np.divide(
-		        np.square(np.subtract(coordp, ellipsoidCenter)),
-		        ellipsoidSquareHalfaxes),
-		    axis=0)  # Sum along columns
+		ellipsoidImplicitResult = np.sum(np.divide(
+		    np.square(np.subtract(coordp, ellipsoidCenter)),
+		    ellipsoidSquareHalfaxes),
+		                                 axis=0)  # Sum along columns
 		p[ellipsoidImplicitResult <= 1.0] += e.A
 		"""
 		idx = np.nonzero((coordp[0, :] - x0) ** 2.0 / asq +
@@ -339,8 +338,8 @@ see : http://www.gnu.org/copyleft/gpl.html
 
 def printEllipses(e2d, delimiter="\t"):
 	print(
-	    "A%sa%sb%sx0%sy0%sphi\n" % (delimiter, delimiter, delimiter, delimiter,
-	                                delimiter),)
+	    "A%sa%sb%sx0%sy0%sphi\n" %
+	    (delimiter, delimiter, delimiter, delimiter, delimiter),)
 	for ellipse in e2d:
 		print(delimiter.join("% 9.5f" % i for i in ellipse))
 
@@ -492,8 +491,8 @@ ISBN 9780127745602
 	    Ellipsoid(-0.02, 0.41, 0.16, 0.21, -0.22, 0.0, -0.25, 108.0, 0.0, 0.0))
 	e3d.append(
 	    Ellipsoid(-0.02, 0.31, 0.11, 0.22, 0.22, 0.0, -0.25, 72.0, 0.0, 0.0))
-	e3d.append(
-	    Ellipsoid(0.02, 0.21, 0.25, 0.5, 0.0, 0.35, -0.25, 0.0, 0.0, 0.0))
+	e3d.append(Ellipsoid(0.02, 0.21, 0.25, 0.5, 0.0, 0.35, -0.25, 0.0, 0.0,
+	                     0.0))
 	#Unsure about this
 	e3d.append(
 	    Ellipsoid(0.02, 0.046, 0.046, 0.046, 0.0, 0.1, -0.25, 0.0, 0.0, 0.0))
@@ -559,12 +558,21 @@ def ToftSchabelKulvait3D():
 	e3d[6] = e3d[6]._replace(z0=0.0)
 	return e3d
 
-def construct2DGaussianDecay(centerx=256, centery=256, sigmax=5, sigmay=5, sizex=512, sizey=512, sizez=512):
+
+def construct2DGaussianDecay(centerx=256,
+                             centery=256,
+                             sigmax=5,
+                             sigmay=5,
+                             sizex=512,
+                             sizey=512,
+                             sizez=512):
 	x = np.zeros(shape=(sizey, sizex), dtype=np.float32)
-	factor = 1/(2*np.pi*(sigmax*sigmay))
-	twosigmaxsquared = float(2*sigmax*sigmax)
-	twosigmaysquared = float(2*sigmax*sigmax)
+	factor = 1 / (2 * np.pi * (sigmax * sigmay))
+	twosigmaxsquared = float(2 * sigmax * sigmax)
+	twosigmaysquared = float(2 * sigmax * sigmax)
 	for i in range(sizex):
 		for j in range(sizey):
-			x[j,i] = factor * np.exp((-float(i-centerx)**2/twosigmaxsquared-float(j-centery)**2/twosigmaysquared))
+			x[j, i] = factor * np.exp(
+			    (-float(i - centerx)**2 / twosigmaxsquared -
+			     float(j - centery)**2 / twosigmaysquared))
 	return np.tile(x, (sizez, 1, 1))

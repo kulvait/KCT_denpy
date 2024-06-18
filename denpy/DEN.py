@@ -49,9 +49,9 @@ def getFrame(fileName,
 			                (info["dimcount"] - 2))
 		dim = info["dimspec"][2:]
 		blockIncrement = 1
-		zindex = 0;
+		zindex = 0
 		for i in ind:
-			zindex = zindex + k[i]*blockIncrement
+			zindex = zindex + k[i] * blockIncrement
 			blockIncrement = blockIncrement * dim[i]
 	else:
 		zindex = k
@@ -75,7 +75,9 @@ def writeFrame(fileName, k, data, force=False):
 		raise IOError('File %s already exists, no header written' % fileName)
 	shape = data.shape
 	if len(shape) != 2:
-		raise ValueError('len(data.shape)==%d!=2 when inserting %d-th frame to file %s.' % (len(shape), k, fileName))
+		raise ValueError(
+		    'len(data.shape)==%d!=2 when inserting %d-th frame to file %s.' %
+		    (len(shape), k, fileName))
 	info = readHeader(fileName)
 	dimx = info["shape"][-1]
 	dimy = info["shape"][-2]
@@ -91,7 +93,9 @@ def writeFrame(fileName, k, data, force=False):
 		k = np.prod(k)
 	f = open(fileName, "r+b")
 	if info["type"] != data.dtype:
-		raise TypeError("Type mismatch between type of DEN %s and type of np.frame %s."%(info["type"], data.dtype))
+		raise TypeError(
+		    "Type mismatch between type of DEN %s and type of np.frame %s." %
+		    (info["type"], data.dtype))
 	data = data.reshape((dimx * dimy,))
 	offset = info["offset"] + dimx * dimy * info["elementbytesize"] * k
 	f.seek(offset, os.SEEK_SET)
@@ -118,18 +122,20 @@ def getNumpyArray(fileName):
 			data[i] = getFrame(fileName, i)
 	return (data)
 
+
 def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 	if not force and os.path.exists(fileName):
-		raise IOError('File %s already exists, no data written, add force=True to overwrite.'%(fileName))
+		raise IOError(
+		    'File %s already exists, no data written, add force=True to overwrite.'
+		    % (fileName))
 	if not isinstance(dataFrame, np.ndarray):
 		raise TypeError('Object dataFrame has to be of type numpy.array')
 	dimspec = np.flip(dataFrame.shape, axis=0)
-	writeExtendedHeader(
-	    fileName,
-	    dimspec,
-	    elementtype=dataFrame.dtype,
-	    ymajor=ymajor,
-	    force=force)
+	writeExtendedHeader(fileName,
+	                    dimspec,
+	                    elementtype=dataFrame.dtype,
+	                    ymajor=ymajor,
+	                    force=force)
 	f = open(fileName, "r+b")
 	offset = 4096
 	f.seek(offset)
@@ -140,8 +146,8 @@ def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 			f.write(dataFrame.tobytes(order="F"))
 		else:
 			#Get flat index for better manipulation
-			dataFrame.shape = (np.prod(dataFrame.shape[:-2]),
-			                   dataFrame.shape[-2], dataFrame.shape[-1])
+			dataFrame.shape = (np.prod(
+			    dataFrame.shape[:-2]), dataFrame.shape[-2], dataFrame.shape[-1])
 			frameSize = dataFrame.shape[-2] * dataFrame.shape[-1]
 			for k in range(dataFrame.shape[0]):
 				newdata = np.array(dataFrame[k])
@@ -180,6 +186,7 @@ def writeExtendedHeader(fileName,
 	dimensionSizes = np.array(dimspec, dtype='<u4')
 	f.write(dimensionSizes.tobytes())
 	f.close()
+
 
 def writeEmptyDEN(fileName,
                   dimspec,
@@ -263,8 +270,10 @@ def readHeader(fileName):
 		par["elementbytesize"] = par["h2"]
 		par["majority"] = par["h3"]
 		par["type"] = denDataTypeToNpDtype(par["h4"])
-		dimensions = np.fromfile(
-		    fileName, dtype=np.dtype('<u4'), count=par["dimcount"], offset=10)
+		dimensions = np.fromfile(fileName,
+		                         dtype=np.dtype('<u4'),
+		                         count=par["dimcount"],
+		                         offset=10)
 		par["dimspec"] = tuple(dimensions.tolist())
 		par["shape"] = tuple(np.flip(dimensions).tolist())
 		par["elementscount"] = np.prod(par["shape"])
@@ -284,7 +293,7 @@ def readHeader(fileName):
 		par["offset"] = 6
 		par["dimcount"] = 3
 		par["legacy"] = 1
-		par["majority"] = 0 #xmajor
+		par["majority"] = 0  #xmajor
 		par["elementscount"] = np.prod(par["shape"])
 		elementscount = par["elementscount"]
 		dataSize = par["size"] - 6
@@ -366,8 +375,11 @@ def legacyStoreNdarrayAsDEN(fileName, dataFrame, force=False):
 	shape = dataFrame.shape  # Now len is for sure 3
 	rows = shape[0]
 	columns = shape[1]
-	writeDENHeader(
-	    fileName, dimx=shape[1], dimy=shape[0], dimz=shape[2], force=force)
+	writeDENHeader(fileName,
+	               dimx=shape[1],
+	               dimy=shape[0],
+	               dimz=shape[2],
+	               force=force)
 	toWrite = dataFrame.astype(np.float32)
 	f = open(fileName, "r+b")
 	for frame in range(shape[2]):
