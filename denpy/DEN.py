@@ -24,12 +24,12 @@ import os
 # col_from is the first col index
 # col_to is not included
 def getFrame(fileName,
-             k,
-             row_from=None,
-             row_to=None,
-             col_from=None,
-             col_to=None,
-             dtype=None):
+			 k,
+			 row_from=None,
+			 row_to=None,
+			 col_from=None,
+			 col_to=None,
+			 dtype=None):
 	info = readHeader(fileName)
 	columns = info["shape"][-1]
 	rows = info["shape"][-2]
@@ -46,7 +46,7 @@ def getFrame(fileName,
 	if info["dimcount"] > 3:
 		if len(k) != info["dimcount"] - 2:
 			raise TypeError("Index must be a list of dimension %d!" %
-			                (info["dimcount"] - 2))
+							(info["dimcount"] - 2))
 		dim = info["dimspec"][2:]
 		blockIncrement = 1
 		zindex = 0
@@ -76,26 +76,26 @@ def writeFrame(fileName, k, data, force=False):
 	shape = data.shape
 	if len(shape) != 2:
 		raise ValueError(
-		    'len(data.shape)==%d!=2 when inserting %d-th frame to file %s.' %
-		    (len(shape), k, fileName))
+			'len(data.shape)==%d!=2 when inserting %d-th frame to file %s.' %
+			(len(shape), k, fileName))
 	info = readHeader(fileName)
 	dimx = info["shape"][-1]
 	dimy = info["shape"][-2]
 	if shape[0] != dimy or shape[1] != dimx:
 		raise ValueError(
-		    'When processing %s there is dimension mismatch between file (dimy, dimx)=(%d, %d) and frame to be stored shape=(dimy, dimx)=(%d, %d).'
-		    % (fileName, dimy, dimx, shape[0], shape[1]))
+			'When processing %s there is dimension mismatch between file (dimy, dimx)=(%d, %d) and frame to be stored shape=(dimy, dimx)=(%d, %d).'
+			% (fileName, dimy, dimx, shape[0], shape[1]))
 	#For more than 3D arrays
 	if info["dimcount"] > 3:
 		if len(k) != info["dimcount"] - 2:
 			raise TypeError("Index must be a list of dimension %d!" %
-			                (info["dimcount"] - 2))
+							(info["dimcount"] - 2))
 		k = np.prod(k)
 	f = open(fileName, "r+b")
 	if info["type"] != data.dtype:
 		raise TypeError(
-		    "Type mismatch between type of DEN %s and type of np.frame %s." %
-		    (info["type"], data.dtype))
+			"Type mismatch between type of DEN %s and type of np.frame %s." %
+			(info["type"], data.dtype))
 	data = data.reshape((dimx * dimy,))
 	offset = info["offset"] + dimx * dimy * info["elementbytesize"] * k
 	f.seek(offset, os.SEEK_SET)
@@ -126,16 +126,16 @@ def getNumpyArray(fileName):
 def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 	if not force and os.path.exists(fileName):
 		raise IOError(
-		    'File %s already exists, no data written, add force=True to overwrite.'
-		    % (fileName))
+			'File %s already exists, no data written, add force=True to overwrite.'
+			% (fileName))
 	if not isinstance(dataFrame, np.ndarray):
 		raise TypeError('Object dataFrame has to be of type numpy.array')
 	dimspec = np.flip(dataFrame.shape, axis=0)
 	writeExtendedHeader(fileName,
-	                    dimspec,
-	                    elementtype=dataFrame.dtype,
-	                    ymajor=ymajor,
-	                    force=force)
+						dimspec,
+						elementtype=dataFrame.dtype,
+						ymajor=ymajor,
+						force=force)
 	f = open(fileName, "r+b")
 	offset = 4096
 	f.seek(offset)
@@ -147,7 +147,7 @@ def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 		else:
 			#Get flat index for better manipulation
 			dataFrame.shape = (np.prod(
-			    dataFrame.shape[:-2]), dataFrame.shape[-2], dataFrame.shape[-1])
+				dataFrame.shape[:-2]), dataFrame.shape[-2], dataFrame.shape[-1])
 			frameSize = dataFrame.shape[-2] * dataFrame.shape[-1]
 			for k in range(dataFrame.shape[0]):
 				newdata = np.array(dataFrame[k])
@@ -157,29 +157,52 @@ def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 	else:
 		f.close()
 		raise TypeError(
-		    'Y major order makes no sense for less than two dimensional arrays')
+			'Y major order makes no sense for less than two dimensional arrays')
 	f.close()
 	return True
 
+def get_dtype_with_byte_order(data_type, byte_order='<'):
+	"""
+	Returns the dtype with the specified byte order for a given NumPy data type.
+
+	Parameters:
+	data_type (np.dtype or type): The NumPy data type (e.g., np.float32, np.int64).
+	byte_order (str): The byte order to be applied. '<' for little-endian and '>' for big-endian.
+
+	Returns:
+	np.dtype: The dtype with the specified byte order.
+	"""
+	if isinstance(data_type, np.dtype):
+		dtype = data_type
+	else:
+		try:
+			dtype = np.dtype(data_type)
+		except TypeError:
+			raise TypeError('Invalid data type parsed to the function: %s' % data_type)
+	if dtype.byteorder in ('=', '|'):
+		return dtype.newbyteorder(byte_order)
+	else:
+		return dtype
 
 def writeExtendedHeader(fileName,
-                        dimspec,
-                        elementtype=np.dtype('<f4'),
-                        ymajor=0,
-                        force=False):
+						dimspec,
+						elementtype=np.dtype('<f4'),
+						ymajor=0,
+						force=False):
 	if not force and os.path.exists(fileName):
 		err = 'File %s already exists, no header written' % fileName
 		raise IOError(err)
+	elementtype = get_dtype_with_byte_order(elementtype)
 	#Create empty file
 	f = open(fileName, "wb")
 	f.seek(4095)
 	f.write(b"\0")
 	header = np.array([
-	    0,
-	    len(dimspec), elementtype.itemsize, ymajor,
-	    npDtypeToDenDataType(elementtype)
+		0,
+		len(dimspec), elementtype.itemsize, ymajor,
+		npDtypeToDenDataType(elementtype)
 	],
-	                  dtype='<u2')
+					  dtype='<u2')
 	f.seek(0)
 	f.write(header.tobytes())
 	f.seek(10)
@@ -187,15 +210,15 @@ def writeExtendedHeader(fileName,
 	f.write(dimensionSizes.tobytes())
 	f.close()
 
-
 def writeEmptyDEN(fileName,
-                  dimspec,
-                  elementtype=np.dtype('<f4'),
-                  ymajor=0,
-                  force=False):
+				  dimspec,
+				  elementtype=np.dtype('<f4'),
+				  ymajor=0,
+				  force=False):
 	if not force and os.path.exists(fileName):
 		err = 'File %s already exists, no header written' % (fileName)
 		raise IOError(err)
+	elementtype = get_dtype_with_byte_order(elementtype)
 	writeExtendedHeader(fileName, dimspec, elementtype, ymajor, force)
 	fileSize = 4096 + np.uint64(np.prod(dimspec)) * elementtype.itemsize
 	filesize = np.uint64(fileSize)
@@ -203,6 +226,7 @@ def writeEmptyDEN(fileName,
 	f.seek(int(fileSize - 1))
 	f.write(b'\x00')
 	f.close()
+
 
 
 def denDataTypeToNpDtype(typeID):
@@ -216,20 +240,21 @@ def denDataTypeToNpDtype(typeID):
 	#	 FLOAT64(8), // 7
 	#	 UINT8(1); // 8
 	types = {
-	    0: np.dtype('<u2'),
-	    1: np.dtype('<i2'),
-	    2: np.dtype('<u4'),
-	    3: np.dtype('<i4'),
-	    4: np.dtype('<u8'),
-	    5: np.dtype('<i8'),
-	    6: np.dtype('<f4'),
-	    7: np.dtype('<f8'),
-	    8: np.dtype('<u1')
+		0: np.dtype('<u2'),
+		1: np.dtype('<i2'),
+		2: np.dtype('<u4'),
+		3: np.dtype('<i4'),
+		4: np.dtype('<u8'),
+		5: np.dtype('<i8'),
+		6: np.dtype('<f4'),
+		7: np.dtype('<f8'),
+		8: np.dtype('<u1')
 	}
 	return (types[typeID])
 
 
 def npDtypeToDenDataType(nptype):
+	nptype = get_dtype_with_byte_order(nptype)
 	#	 UINT16(2), // 0
 	#	 INT16(2), // 1
 	#	 UINT32(4), // 2
@@ -240,15 +265,15 @@ def npDtypeToDenDataType(nptype):
 	#	 FLOAT64(8), // 7
 	#	 UINT8(1); // 8
 	types = {
-	    np.dtype('<u2'): 0,
-	    np.dtype('<i2'): 1,
-	    np.dtype('<u4'): 2,
-	    np.dtype('<i4'): 3,
-	    np.dtype('<u8'): 4,
-	    np.dtype('<i8'): 5,
-	    np.dtype('<f4'): 6,
-	    np.dtype('<f8'): 7,
-	    np.dtype('<u1'): 8
+		np.dtype('<u2'): 0,
+		np.dtype('<i2'): 1,
+		np.dtype('<u4'): 2,
+		np.dtype('<i4'): 3,
+		np.dtype('<u8'): 4,
+		np.dtype('<i8'): 5,
+		np.dtype('<f4'): 6,
+		np.dtype('<f8'): 7,
+		np.dtype('<u1'): 8
 	}
 	return (types[nptype])
 
@@ -257,7 +282,7 @@ def readHeader(fileName):
 	header = np.fromfile(fileName, dtype=np.dtype('<u2'), count=3)
 	par = {}
 	par["h0"] = np.uint32(
-	    header[0]).item()  #Convert to default Python integer type
+		header[0]).item()  #Convert to default Python integer type
 	par["h1"] = np.uint32(header[1]).item(
 	)  #see https://stackoverflow.com/questions/9452775/converting-numpy-dtypes-to-native-python-types
 	par["h2"] = np.uint32(header[2]).item()
@@ -271,25 +296,25 @@ def readHeader(fileName):
 		par["majority"] = par["h3"]
 		par["type"] = denDataTypeToNpDtype(par["h4"])
 		dimensions = np.fromfile(fileName,
-		                         dtype=np.dtype('<u4'),
-		                         count=par["dimcount"],
-		                         offset=10)
+								 dtype=np.dtype('<u4'),
+								 count=par["dimcount"],
+								 offset=10)
 		par["dimspec"] = tuple(dimensions.tolist())
 		par["shape"] = tuple(np.flip(dimensions).tolist())
 		par["elementscount"] = np.prod(par["shape"])
 		par["offset"] = 4096
 		par["legacy"] = 0
 		if par["elementscount"] * par["elementbytesize"] != par["size"] - par[
-		    "offset"]:
+			"offset"]:
 			raise TypeError("File %s is not valid DEN file!" % fileName)
 	else:
 		par["rows"] = np.uint32(
-		    header[0]).item()  #Convert to default Python integer type
+			header[0]).item()  #Convert to default Python integer type
 		par["cols"] = np.uint32(header[1]).item(
 		)  #see https://stackoverflow.com/questions/9452775/converting-numpy-dtypes-to-native-python-types
 		par["zdim"] = np.uint32(header[2]).item()
 		par["shape"] = (par["h2"], par["h0"], par["h1"])  #(dimz, dimy, dimx)
-		par["dimspec"] = (par["h1"], par["h0"], par["h2"])  #(dimx, dimy, dimz)
+		par["dimspec"] = (par["h1"], par["h0"], par["h2"])	#(dimx, dimy, dimz)
 		par["offset"] = 6
 		par["dimcount"] = 3
 		par["legacy"] = 1
@@ -312,8 +337,8 @@ def readHeader(fileName):
 			raise TypeError("File %s is not valid DEN file!" % fileName)
 	if par["elementbytesize"] != par["type"].itemsize:
 		raise TypeError(
-		    "Byte size of the element %d does not match the byte size of the type %s %d."
-		    % (par["elementbytesize"], par["type"].str, par["type"].itemsize))
+			"Byte size of the element %d does not match the byte size of the type %s %d."
+			% (par["elementbytesize"], par["type"].str, par["type"].itemsize))
 	elementscount = np.prod(par["shape"])
 	return (par)
 
@@ -371,15 +396,15 @@ def legacyStoreNdarrayAsDEN(fileName, dataFrame, force=False):
 		dataFrame = np.expand_dims(dataFrame, axis=2)
 	elif len(dataFrame.shape) > 3:
 		raise ValueError('Dimension of dataFrame should be 2 or 3 but is %d.' %
-		                 len(dataFrame.shape))
+						 len(dataFrame.shape))
 	shape = dataFrame.shape  # Now len is for sure 3
 	rows = shape[0]
 	columns = shape[1]
 	writeDENHeader(fileName,
-	               dimx=shape[1],
-	               dimy=shape[0],
-	               dimz=shape[2],
-	               force=force)
+				   dimx=shape[1],
+				   dimy=shape[0],
+				   dimz=shape[2],
+				   force=force)
 	toWrite = dataFrame.astype(np.float32)
 	f = open(fileName, "r+b")
 	for frame in range(shape[2]):

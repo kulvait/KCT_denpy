@@ -15,8 +15,18 @@ from scipy.ndimage import gaussian_filter
 from scipy.signal import savgol_filter
 import matplotlib.pyplot as plt
 
-logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+
+# Create a logger specific to this module
 log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)  # Set the logging level to INFO
+# Create a console handler and set its level to INFO
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+# Create a formatter and set it for the handler
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+# Add the handler to the logger
+log.addHandler(ch)
 
 #Center of rotation is estimated as a offset from center 0.5xdim so that COR = 0.5xdim + offset
 #For convenience x dimension is measured from the edge of the 0th pixel so that the

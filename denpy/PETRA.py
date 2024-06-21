@@ -4,13 +4,26 @@
 Processing of h5 format used to output Petra III data
 
 @author: Vojtech Kulvait
-@date: 2022-2023
+@date: 2022-2024
 """
 import h5py
+import logging
+import os
 import pandas as pd
 import numpy as np
 from bisect import bisect_left
 
+# Create a logger specific to this module
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)	# Set the logging level to INFO
+# Create a console handler and set its level to INFO
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+# Create a formatter and set it for the handler
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+# Add the handler to the logger
+log.addHandler(ch)
 
 def _insertToDf(df, dat, name):
 	time = dat["%s/time" % (name)]
@@ -19,7 +32,7 @@ def _insertToDf(df, dat, name):
 		value = value.asstr()
 	if len(time) != len(value):
 		raise IOError("len(time)=%d len(value)=%d for entry %s" %
-		              (len(time), len(value), name))
+					  (len(time), len(value), name))
 	for i in range(len(value)):
 		t = time[i]
 		v = value[i]
@@ -27,8 +40,8 @@ def _insertToDf(df, dat, name):
 			df.loc[t][name] = v
 		else:
 			raise IOError(
-			    "Can not insert value=%s into the column=%s because related time=%s is not in index"
-			    % (v, name, t))
+				"Can not insert value=%s into the column=%s because related time=%s is not in index"
+				% (v, name, t))
 
 
 def beamCurrentDataset(h5file):
@@ -47,6 +60,42 @@ def beamCurrentDataset(h5file):
 	df.sort_index(inplace=True)
 	return df
 
+def getExperimentInfo(h5file, overrideMagnification=None): 
+	h5 = h5py.File(h5file, 'r')
+	info = {}
+	info["h5"] = os.path.abspath(h5file)
+	setup = {}
+	camera = {}
+	if 'entry/scan/setup' in h5:
+		setup_group = h5['entry/scan/setup']
+		# Iterate over all items in the setup group
+		for key in setup_group.keys():
+			# Assuming each entry is a dataset containing a single double value
+			setup[key] = setup_group[key][()][0]
+	else:
+		log.warning("The path 'entry/scan/setup' does not exist in %s." % info["h5"])
+	# Check for the camera data path
+	if 'entry/hardware/camera' in h5:
+		camera_group = h5['entry/hardware/camera']
+	elif 'entry/hardware/camera1' in h5:
+		camera_group = h5['entry/hardware/camera1']
+	else:
+		camera_group = None
+		log.warning("Neither 'entry/hardware/camera' nor 'entry/hardware/camera1' exists in %s." % info["h5"])
+	# If a camera group was found, extract the data
+	if camera_group is not None:
+		for key in camera_group.keys():
+			# Assuming each entry is a dataset containing a single double value
+			camera[key] = camera_group[key][()][0]
+		if overrideMagnification is not None:
+			camera["magnification"] = overrideMagnification
+		if "magnification" in camera and "pixelsize" in camera:
+			info["pix_size"] = camera["pixelsize"] / camera["magnification"]
+			info["pix_size_cam"] = camera["pixelsize"]
+	info["setup"] = setup
+	info["camera"] = camera
+	return info
+
 
 def scanDataset(h5file, includeCurrent=True):
 	h5 = h5py.File(h5file, 'r')
@@ -57,10 +106,10 @@ def scanDataset(h5file, includeCurrent=True):
 	#There always shall be image_key entry
 	if includeCurrent:
 		df = pd.DataFrame(columns=labels + ["current", "time"],
-		                  index=list(data["image_key/time"]))
+						  index=list(data["image_key/time"]))
 	else:
 		df = pd.DataFrame(columns=labels + ["time"],
-		                  index=list(data["image_key/time"]))
+						  index=list(data["image_key/time"]))
 	for ind in df.index:
 		df.loc[ind, "time"] = pd.to_datetime(ind, unit="ms")
 	for lab in labels:
@@ -75,10 +124,10 @@ def scanDataset(h5file, includeCurrent=True):
 			posAfterEq = bisect_left(currentFrame.index, ind)
 			if posAfterEq == len(currentFrame.index):
 				df.loc[ind]["current"] = currentFrame.iloc[posAfterEq -
-				                                           1]["current"]
+														   1]["current"]
 			elif posAfterEq == 0 or currentFrame.index[posAfterEq] == ind:
 				df.loc[ind]["current"] = currentFrame.iloc[posAfterEq][
-				    "current"]
+					"current"]
 			else:
 				t0 = float(currentFrame.index[posAfterEq - 1])
 				cur0 = float(currentFrame.iloc[posAfterEq - 1]["current"])
@@ -88,21 +137,21 @@ def scanDataset(h5file, includeCurrent=True):
 				cur = cur0 + ((t - t0) / (t1 - t0)) * (cur1 - cur0)
 				if np.isnan(cur):
 					print(
-					    "Cur is NaN t0=%f cur0=%f t1=%f cur1=%f t=%f ind=%d posAfterEq=%d len(currentFrame)=%d!"
-					    % (t0, cur0, t1, cur1, t, ind, posAfterEq,
-					       len(currentFrame)))
+						"Cur is NaN t0=%f cur0=%f t1=%f cur1=%f t=%f ind=%d posAfterEq=%d len(currentFrame)=%d!"
+						% (t0, cur0, t1, cur1, t, ind, posAfterEq,
+						   len(currentFrame)))
 					raise ValueError(
-					    "Interpolation error producing NaN beam curent.")
+						"Interpolation error producing NaN beam curent.")
 				df.loc[ind]["current"] = cur
 	df = df.sort_values("time", ascending=True)
 	return df
 
 
 def imageDataset(h5file,
-                 image_key=0,
-                 includeCurrent=True,
-                 includePixelShift=False,
-                 overrideMagnification=None):
+				 image_key=0,
+				 includeCurrent=True,
+				 includePixelShift=False,
+				 overrideMagnification=None):
 	df = scanDataset(h5file, includeCurrent)
 	df = df.loc[df["image_key"] == image_key]
 	df = df.assign(frame_ind=np.arange(len(df)))
@@ -114,8 +163,8 @@ def imageDataset(h5file,
 			cam = "camera"
 		else:
 			raise ValueError(
-			    "There is no entry/hardware/camera or entry/hardware/camera1 entry in %s."
-			    % info["h5"])
+				"There is no entry/hardware/camera or entry/hardware/camera1 entry in %s."
+				% info["h5"])
 		pix_size_cam = float(h5["entry/hardware/%s/pixelsize" % cam][0])
 		if overrideMagnification is not None:
 			pix_size_mag = overrideMagnification

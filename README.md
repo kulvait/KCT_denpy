@@ -42,6 +42,33 @@ pip install --user --upgrade .
 ### DEN
 The denpy.DEN module provides tools to manipulate DEN files in Python. The DEN format includes a short header specifying the dimensionality of the data, making it particularly convenient for computed tomography applications.
 
+**Typical import of the module**
+```python
+from denpy import DEN
+```
+
+** Getting information about the DEN file **
+- `info = DEN.readHeader(file_path)`: Reads the header of a DEN file and returns a dictionary with the header information.
+
+** Important fields of the info dictionary **
+
+- `info["dimspec"]`: Dimensions of the data (e.g., (512, 256, 128) for a 3D dataset, which corresponds to 128 frames of xdim x ydim = 512 x 256). 
+- `info["dimcount"]`: Number of dimensions in the data `info["dimcount"] = len(info["dimspec"])`.
+- `info["shape"]`: Shape of the array that can be read with `DEN.getNumpyArray`, which is flipped compared to `info["dimspec"]` because of the way NumPy indexes arrays.
+
+** Reading and writing entire files **
+
+- `x = DEN.getNumpyArray(file_path)`: Reads the entire DEN file and returns it as a NumPy array.
+- `DEN.writeEmptyDEN(file_path, [dimx, dimy, dimz], force=True)`: Writes an empty DEN file with the specified dimensions.
+- `DEN.storeNdarrayAsDEN(file_path, x, force=True)`: Writes a NumPy array to a DEN file.
+
+Note that flipped order of the Numpy array dimensions allows user to use f = x[0] to read the first frame in the file, keep in mind that first index to the Numpy array is the slowest changing index, so the last index in `info["dimspec"]`.
+
+** Reading individual frames **
+
+- `DEN.getFrame(file_path, index)`: Reads a single frame (slice) from a DEN file and returns it as a NumPy array.
+- `DEN.writeFrame(file_path, index, frame, force=True)`: Writes a single frame (slice) to a DEN file.
+
 ### COR
 The denpy.COR module is used to detect the center of rotation in tomographic data from synchrotron sources.
 
