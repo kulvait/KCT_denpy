@@ -1,6 +1,6 @@
 # denpy
 
-**denpy** is a Python package designed for manipulating the [DEN file format](https://kulvait.github.io/KCT_doc/den-format.html), commonly used in computed tomography. This package also includes modules for working with other data formats and processing tasks related to tomography.
+**denpy** is a Python package designed for manipulating the [DEN file format](https://kulvait.github.io/KCT_doc/den-format.html). The main module `DEN` contains functions for conversion between `DEN` and `numpy.array`. Other modules include functions and methods for processing computed tomographic data, DICOM files and generating Shepp-Logan phantoms.
 
 SSH clone
 ```bash
