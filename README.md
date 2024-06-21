@@ -1,6 +1,6 @@
 # denpy
 
-denpy is a Python package designed for manipulating the less well-known DEN (Dennerlein) raw data format, commonly used in computed tomography. This package also includes modules for working with other data formats and processing tasks related to tomography.
+**denpy** is a Python package designed for manipulating the [DEN file format](https://kulvait.github.io/KCT_doc/den-format.html), commonly used in computed tomography. This package also includes modules for working with other data formats and processing tasks related to tomography.
 
 SSH clone
 ```bash
@@ -47,16 +47,16 @@ The denpy.DEN module provides tools to manipulate DEN files in Python. The DEN f
 from denpy import DEN
 ```
 
-** Getting information about the DEN file **
+**Getting information about the DEN file**
 - `info = DEN.readHeader(file_path)`: Reads the header of a DEN file and returns a dictionary with the header information.
 
-** Important fields of the info dictionary **
+**Important fields of the info dictionary**
 
 - `info["dimspec"]`: Dimensions of the data (e.g., (512, 256, 128) for a 3D dataset, which corresponds to 128 frames of xdim x ydim = 512 x 256). 
 - `info["dimcount"]`: Number of dimensions in the data `info["dimcount"] = len(info["dimspec"])`.
 - `info["shape"]`: Shape of the array that can be read with `DEN.getNumpyArray`, which is flipped compared to `info["dimspec"]` because of the way NumPy indexes arrays.
 
-** Reading and writing entire files **
+**Reading and writing entire files**
 
 - `x = DEN.getNumpyArray(file_path)`: Reads the entire DEN file and returns it as a NumPy array.
 - `DEN.writeEmptyDEN(file_path, [dimx, dimy, dimz], force=True)`: Writes an empty DEN file with the specified dimensions.
@@ -64,7 +64,7 @@ from denpy import DEN
 
 Note that flipped order of the Numpy array dimensions allows user to use f = x[0] to read the first frame in the file, keep in mind that first index to the Numpy array is the slowest changing index, so the last index in `info["dimspec"]`.
 
-** Reading individual frames **
+**Reading individual frames**
 
 - `DEN.getFrame(file_path, index)`: Reads a single frame (slice) from a DEN file and returns it as a NumPy array.
 - `DEN.writeFrame(file_path, index, frame, force=True)`: Writes a single frame (slice) to a DEN file.
