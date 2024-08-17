@@ -309,6 +309,7 @@ def sinogram_consistency_detection360(sinogram,
 		plt.xlabel("Shift offset")
 		plt.show()
 	#Try 1D interpolation with splines
+	#normedValues are values of quantity to minimize on integer points IND
 	interpolation = scipy.interpolate.interp1d(IND, normedValues, kind='cubic')
 	#Now subpixel precision
 	try:
