@@ -97,7 +97,7 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 	return info
 
 
-def scanDataset(h5file, includeCurrent=True):
+def scanDataset(h5file, includeCurrent=False):
 	h5 = h5py.File(h5file, 'r')
 	data = h5["entry/scan/data"]
 	labels = list(data.keys())
