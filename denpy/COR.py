@@ -14,6 +14,7 @@ import scipy
 from scipy.ndimage import gaussian_filter
 from scipy.signal import savgol_filter
 import matplotlib.pyplot as plt
+import matplotlib.ticker as plticker
 
 
 # Create a logger specific to this module
@@ -259,12 +260,15 @@ def sinogram_consistency_detection360(sinogram,
 		iteration = iteration + 1
 	shiftEstimate_f = IND[ARGMIN]
 	if verbose:
+		#plt.title(
+		#    "Init offset = %0.1f in green first half integer estimate %0.1f in red."
+		#    % (init_offset, 0.5 * shiftEstimate_cur))
 		plt.title(
-		    "Init offset = %0.1f in green first half integer estimate %0.1f in red."
-		    % (init_offset, 0.5 * shiftEstimate_cur))
-		plt.plot(IND, normedValues)
-		plt.axvline(x=2 * init_offset, color="green", linewidth=1)
-		plt.axvline(x=shiftEstimate_cur, color="red", linewidth=1)
+		    "Initial unbinned offset estimate %0.1f in red."
+		    % (0.5 * shiftEstimate_cur))
+		plt.plot(0.5*IND, normedValues)
+		#plt.axvline(x=2 * init_offset, color="green", linewidth=1)
+		plt.axvline(x=shiftEstimate_cur*0.5, color="red", linewidth=1)
 		plt.ylabel("Minimizer value")
 		plt.xlabel("Shift offset")
 		plt.show()
@@ -299,12 +303,18 @@ def sinogram_consistency_detection360(sinogram,
 	peakSharpnessGlobal, peakSharpnessLocal = measurePeakSharpness(
 	    normedValues, ARGMIN)
 	if verbose:
+		#plt.title(
+		#    "Offset estimate first %0.1f in green and converged %0.1f in red." %
+		#    (init_offset, 0.5 * shiftEstimate_cur))
+		plt.gca().xaxis.set_major_locator(plt.MultipleLocator(2))
+		plt.gca().xaxis.set_minor_locator(plt.MultipleLocator(1))
 		plt.title(
-		    "Offset estimate first %0.1f in green and converged %0.1f in red." %
-		    (init_offset, 0.5 * shiftEstimate_cur))
-		plt.plot(IND, normedValues)
-		plt.axvline(x=shiftEstimate_f, color="green", linewidth=1)
-		plt.axvline(x=shiftEstimate_cur, color="red", linewidth=1)
+		    "Unbinned offset estimate %0.1f in red." %
+		    (0.5 * shiftEstimate_cur))
+		plt.plot(0.5*IND, normedValues)
+		#plt.axvline(x=shiftEstimate_f, color="green", linewidth=1)
+		plt.axvline(x=shiftEstimate_cur*0.5, color="red", linewidth=1)
+		plt.xlim(shiftEstimate_cur*0.5 - 10, shiftEstimate_cur*0.5 + 10)
 		plt.ylabel("Minimizer value")
 		plt.xlabel("Shift offset")
 		plt.show()
@@ -316,6 +326,7 @@ def sinogram_consistency_detection360(sinogram,
 		searchDiameter = 5
 		maskingParams = computeMaskingParameters(xdim, shiftEstimate_cur * 0.5,
 		                                         searchDiameter, balanced)
+		IND_ORIG = IND
 		IND = maskingParams["ind"]
 		IND = np.linspace(IND[0], IND[-1], 1001)
 		#We intentionally keep previous maskSlice to avoid interpolation errors so not	maskSlice = par["slice"]
@@ -332,8 +343,15 @@ def sinogram_consistency_detection360(sinogram,
 	#plt.axvline(x=0.5*MAX -  0.5* IND[ARGMII], color="blue", linewidth=3)
 	#plt.show()
 	if verbose:
-		plt.title("ESTIMATE_SUBPIX and ESTIMATE_INTERP")
-		plt.plot(IND, interpValues, label="Interpolation")
+		plt.gca().xaxis.set_major_locator(plt.MultipleLocator(2))
+		plt.gca().xaxis.set_minor_locator(plt.MultipleLocator(1))
+		plt.title(
+		    "Unbinned offset estimate interpolation %0.2f in red." %
+		    (ESTIMATE_INTERP))
+		plt.plot(0.5*IND_ORIG, normedValues, label="Original")
+		plt.plot(0.5*IND, interpValues, label="Interpolation")
+		plt.axvline(x=ESTIMATE_INTERP, color="red", linewidth=1)
+		plt.xlim(shiftEstimate_cur*0.5 - 10, shiftEstimate_cur*0.5 + 10)
 		plt.legend()
 		plt.show()
 	return (ESTIMATE_OFFSET, ESTIMATE_INTERP, convergingSequence,
