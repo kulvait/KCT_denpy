@@ -218,10 +218,7 @@ Ellipsoid = namedtuple("Ellipsoid", "A a b c x0 y0 z0 phi theta psi")
 Ellipse = namedtuple("Ellipse", "A a b x0 y0 phi")
 
 
-def storePhantom3DAsDEN(fileName,
-                        phantom='ToftSchabelKulvait3D',
-                        n=512,
-                        force=False):
+def storePhantom3DAsDEN(fileName, phantom='ToftSchabelKulvait3D', n=512, force=False):
 	if not force and os.path.exists(fileName):
 		raise IOError('File already exists, no data written')
 	phantom = phantom3d(phantom, n)
@@ -254,17 +251,14 @@ def constructPhantom3D(e3d, n=512):
 		# Euler rotation matrix
 		# Here Matthias Schabel evidently has choosen so called Z1X2Z3 matrix as defined https://en.wikipedia.org/wiki/Euler_angles#Rotation_matrix
 		# Implicit equation for ellipsoid is evaluated in rotated coordinates
-		alpha = np.array(
-		    [[c3 * c1 - c2 * s1 * s3, c3 * s1 + c2 * c1 * s3, s3 * s2],
-		     [-s3 * c1 - c2 * s1 * c3, -s3 * s1 + c2 * c1 * c3, c3 * s2],
-		     [s2 * s1, -s2 * c1, c2]])
+		alpha = np.array([[c3 * c1 - c2 * s1 * s3, c3 * s1 + c2 * c1 * s3, s3 * s2],
+		                  [-s3 * c1 - c2 * s1 * c3, -s3 * s1 + c2 * c1 * c3, c3 * s2], [s2 * s1, -s2 * c1, c2]])
 		# rotated ellipsoid coordinates
 		coordp = np.matmul(alpha, coord)
 		ellipsoidCenter = np.array([[e.x0], [e.y0], [e.z0]])
 		ellipsoidSquareHalfaxes = np.array(np.square([[e.a], [e.b], [e.c]]))
-		ellipsoidImplicitResult = np.sum(np.divide(
-		    np.square(np.subtract(coordp, ellipsoidCenter)),
-		    ellipsoidSquareHalfaxes),
+		ellipsoidImplicitResult = np.sum(np.divide(np.square(np.subtract(coordp, ellipsoidCenter)),
+		                                           ellipsoidSquareHalfaxes),
 		                                 axis=0)  # Sum along columns
 		p[ellipsoidImplicitResult <= 1.0] += e.A
 		"""
@@ -331,15 +325,15 @@ see : http://www.gnu.org/copyleft/gpl.html
 		e3d = Koay3D()
 	elif phantom == 'ToftSchabelKulvait3D':
 		e3d = ToftSchabelKulvait3D()
+	elif phantom == 'Chessboard3D':
+		return Chessboard3D(n)
 	else:
 		raise TypeError('phantom type "%s" not recognized' % phantom)
 	return constructPhantom3D(e3d, n)
 
 
 def printEllipses(e2d, delimiter="\t"):
-	print(
-	    "A%sa%sb%sx0%sy0%sphi\n" %
-	    (delimiter, delimiter, delimiter, delimiter, delimiter),)
+	print("A%sa%sb%sx0%sy0%sphi\n" % (delimiter, delimiter, delimiter, delimiter, delimiter),)
 	for ellipse in e2d:
 		print(delimiter.join("% 9.5f" % i for i in ellipse))
 
@@ -347,16 +341,14 @@ def printEllipses(e2d, delimiter="\t"):
 def printEllipsoids(e3d, delimiter="\t"):
 	print(
 	    "A%sa%sb%sc%sx0%sy0%sz0%sphi%stheta%spsi\n" %
-	    (delimiter, delimiter, delimiter, delimiter, delimiter, delimiter,
-	     delimiter, delimiter, delimiter),)
+	    (delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter),)
 	for ellipsoid in e3d:
 		print(delimiter.join("% 9.5f" % i for i in ellipsoid))
 
 
 def EllipseToEllipsoid(ellipse):
 	"""Converts Ellipse to Ellipsoid where c=0, z0=0, theta=0, psi=0"""
-	return Ellipsoid(ellipse.A, ellipse.a, ellipse.b, 0.0, ellipse.x0,
-	                 ellipse.y0, 0.0, ellipse.phi, 0.0, 0.0)
+	return Ellipsoid(ellipse.A, ellipse.a, ellipse.b, 0.0, ellipse.x0, ellipse.y0, 0.0, ellipse.phi, 0.0, 0.0)
 
 
 def SheppLogan2D():
@@ -485,25 +477,16 @@ ISBN 9780127745602
 	"""
 	e3d = []
 	e3d.append(Ellipsoid(2.0, 0.69, 0.92, 0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-	e3d.append(
-	    Ellipsoid(-0.98, 0.6624, 0.874, 0.88, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-	e3d.append(
-	    Ellipsoid(-0.02, 0.41, 0.16, 0.21, -0.22, 0.0, -0.25, 108.0, 0.0, 0.0))
-	e3d.append(
-	    Ellipsoid(-0.02, 0.31, 0.11, 0.22, 0.22, 0.0, -0.25, 72.0, 0.0, 0.0))
-	e3d.append(Ellipsoid(0.02, 0.21, 0.25, 0.5, 0.0, 0.35, -0.25, 0.0, 0.0,
-	                     0.0))
+	e3d.append(Ellipsoid(-0.98, 0.6624, 0.874, 0.88, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+	e3d.append(Ellipsoid(-0.02, 0.41, 0.16, 0.21, -0.22, 0.0, -0.25, 108.0, 0.0, 0.0))
+	e3d.append(Ellipsoid(-0.02, 0.31, 0.11, 0.22, 0.22, 0.0, -0.25, 72.0, 0.0, 0.0))
+	e3d.append(Ellipsoid(0.02, 0.21, 0.25, 0.5, 0.0, 0.35, -0.25, 0.0, 0.0, 0.0))
 	#Unsure about this
-	e3d.append(
-	    Ellipsoid(0.02, 0.046, 0.046, 0.046, 0.0, 0.1, -0.25, 0.0, 0.0, 0.0))
-	e3d.append(
-	    Ellipsoid(0.01, 0.046, 0.023, 0.02, -0.08, -0.65, -0.25, 0.0, 0.0, 0.0))
-	e3d.append(
-	    Ellipsoid(0.01, 0.046, 0.023, 0.02, 0.06, -0.65, -0.25, 90.0, 0.0, 0.0))
-	e3d.append(
-	    Ellipsoid(0.02, 0.056, 0.04, 0.1, 0.06, -0.105, 0.625, 90.0, 0.0, 0.0))
-	e3d.append(
-	    Ellipsoid(-0.02, 0.056, 0.056, 0.1, 0.0, 0.1, 0.625, 0.0, 0.0, 0.0))
+	e3d.append(Ellipsoid(0.02, 0.046, 0.046, 0.046, 0.0, 0.1, -0.25, 0.0, 0.0, 0.0))
+	e3d.append(Ellipsoid(0.01, 0.046, 0.023, 0.02, -0.08, -0.65, -0.25, 0.0, 0.0, 0.0))
+	e3d.append(Ellipsoid(0.01, 0.046, 0.023, 0.02, 0.06, -0.65, -0.25, 90.0, 0.0, 0.0))
+	e3d.append(Ellipsoid(0.02, 0.056, 0.04, 0.1, 0.06, -0.105, 0.625, 90.0, 0.0, 0.0))
+	e3d.append(Ellipsoid(-0.02, 0.056, 0.056, 0.1, 0.0, 0.1, 0.625, 0.0, 0.0, 0.0))
 	return e3d
 
 
@@ -559,13 +542,28 @@ def ToftSchabelKulvait3D():
 	return e3d
 
 
-def construct2DGaussianDecay(centerx=256,
-                             centery=256,
-                             sigmax=5,
-                             sigmay=5,
-                             sizex=512,
-                             sizey=512,
-                             sizez=512):
+def Chessboard3D(n=512, block_count=8):
+	# Calculate the block size
+	block_size = (n + block_count - 1) // block_count
+	grid = np.zeros((n, n, n), dtype=np.float32)
+	# Loop over each block in the grid
+	# Loop over each block in the grid
+	for i in range(0, n, block_size):
+		for j in range(0, n, block_size):
+			for k in range(0, n, block_size):
+				# Determine the end indices for the current block, ensuring they don't exceed bounds
+				i_end = min(i + block_size, n)
+				j_end = min(j + block_size, n)
+				k_end = min(k + block_size, n)
+
+				# Determine whether to fill the block with 0 or 1 based on the parity of the sum of the indices
+				if (i // block_size + j // block_size + k // block_size) % 2 == 0:
+					# Fill the block with ones
+					grid[i:i_end, j:j_end, k:k_end] = 1.0
+	return grid
+
+
+def construct2DGaussianDecay(centerx=256, centery=256, sigmax=5, sigmay=5, sizex=512, sizey=512, sizez=512):
 	x = np.zeros(shape=(sizey, sizex), dtype=np.float32)
 	factor = 1 / (2 * np.pi * (sigmax * sigmay))
 	twosigmaxsquared = float(2 * sigmax * sigmax)
@@ -573,6 +571,5 @@ def construct2DGaussianDecay(centerx=256,
 	for i in range(sizex):
 		for j in range(sizey):
 			x[j, i] = factor * np.exp(
-			    (-float(i - centerx)**2 / twosigmaxsquared -
-			     float(j - centery)**2 / twosigmaysquared))
+			    (-float(i - centerx)**2 / twosigmaxsquared - float(j - centery)**2 / twosigmaysquared))
 	return np.tile(x, (sizez, 1, 1))
