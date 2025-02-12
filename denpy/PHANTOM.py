@@ -542,24 +542,39 @@ def ToftSchabelKulvait3D():
 	return e3d
 
 
-def Chessboard3D(n=512, block_count=8):
+def Chessboard3D(n=512, block_count=8, i=None, j=None, k=None):
+	"""
+    Create a 3D chessboard phantom, with an option to isolate a single hypervoxel.
+
+    Parameters:
+    - n: int, size of the grid (n x n x n).
+    - block_count: int, number of blocks along each dimension.
+    - i: int or None, optional block index in the x-direction to fill (if specified).
+    - j: int or None, optional block index in the y-direction to fill (if specified).
+    - k: int or None, optional block index in the z-direction to fill (if specified).
+
+    Returns:
+    - grid: 3D numpy array of size (n, n, n) with the chessboard pattern or isolated block(s).
+    """
 	# Calculate the block size
 	block_size = (n + block_count - 1) // block_count
 	grid = np.zeros((n, n, n), dtype=np.float32)
+	# Handle fixed hypervoxel indices if provided
+	i_range = [i * block_size] if i is not None else range(0, n, block_size)
+	j_range = [j * block_size] if j is not None else range(0, n, block_size)
+	k_range = [k * block_size] if k is not None else range(0, n, block_size)
 	# Loop over each block in the grid
-	# Loop over each block in the grid
-	for i in range(0, n, block_size):
-		for j in range(0, n, block_size):
-			for k in range(0, n, block_size):
+	for i_start in i_range:
+		for j_start in j_range:
+			for k_start in k_range:
 				# Determine the end indices for the current block, ensuring they don't exceed bounds
-				i_end = min(i + block_size, n)
-				j_end = min(j + block_size, n)
-				k_end = min(k + block_size, n)
-
+				i_end = min(i_start + block_size, n)
+				j_end = min(j_start + block_size, n)
+				k_end = min(k_start + block_size, n)
 				# Determine whether to fill the block with 0 or 1 based on the parity of the sum of the indices
-				if (i // block_size + j // block_size + k // block_size) % 2 == 0:
+				if (i_start // block_size + j_start // block_size + k_start // block_size) % 2 == 0:
 					# Fill the block with ones
-					grid[i:i_end, j:j_end, k:k_end] = 1.0
+					grid[k_start:k_end, j_start:j_end, i_start:i_end] = 1.0
 	return grid
 
 
