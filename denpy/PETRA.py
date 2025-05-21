@@ -44,20 +44,42 @@ def _insertToDf(df, dat, name):
 				% (v, name, t))
 
 
-def beamCurrentDataset(h5file):
+# This function extracts beam current readings from PETRA III scan HDF5 files.
+# Creates a DataFrame with time and current values in mA.
+# These readings are used to relate frame time data with synchrotron beam current.
+# The index is based on UNIX timestamps in milliseconds, allowing accurate interpolation.
+# `timeOffsetSec` is applied to synchronize measurements with external frame time references.
+def beamCurrentDataset(h5file, timeOffsetSec=None):
+	if timeOffsetSec is None:
+		timestampadjustment = np.int64(0)
+	else:
+		timestampadjustment = np.int64(timeOffsetSec * 1000)
+	# Open the HDF5 file containing PETRA III scan metadata
 	h5 = h5py.File(h5file, 'r')
+	# Extract raw timestamp IDs (in milliseconds since epoch)
 	ID = list(h5["entry/hardware/beam_current/current/time"])
+	# Convert raw timestamps to datetime objects for human-readable interpretation
 	time = list(pd.to_datetime(i, unit="ms") for i in ID)
+	# Extract beam current values (in mA) from the HDF5 file
 	value = list(h5["entry/hardware/beam_current/current/value"])
+	#Combine time and current values into a list of tuples
 	agg = list(zip(time, value))
+	# Create a DataFrame from the combined data, with timestamps as the index
 	df = pd.DataFrame(agg, columns=["time", "current"], index=ID)
-	#There were duplicates caused problems
-	#https://stackoverflow.com/questions/13035764/remove-pandas-rows-with-duplicate-indices
+	# Remove duplicate timestamps (keep first occurrence only)
+	# This is important to avoid issues in interpolation or reindexing
+	# see https://stackoverflow.com/questions/13035764/remove-pandas-rows-with-duplicate-indices
 	df = df[~df.index.duplicated(keep='first')]
+	# Remove any rows where the index (timestamp) is exactly zero — likely invalid
 	#Remove zero index https://stackoverflow.com/questions/13851535/how-to-delete-rows-from-a-pandas-dataframe-based-on-a-conditional-expression
 	df.drop(df[df.index == 0].index, inplace=True)
-	#Need to sort it for interpolation to work
+	# Sort by index (timestamp) to ensure chronological order
 	df.sort_index(inplace=True)
+	# Apply a time offset to the index (timestamp) to synchronize with external data
+	if timestampadjustment != 0:
+		df.index = (df.index + timestampadjustment).astype(np.uint64) # Adjustment in milliseconds
+		# Update the time column to reflect the adjusted timestamps
+		df.time = pd.to_datetime(df.index, unit="ms")
 	return df
 
 def getExperimentInfo(h5file, overrideMagnification=None): 
@@ -96,8 +118,10 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 	info["camera"] = camera
 	return info
 
-
-def scanDataset(h5file, includeCurrent=False):
+#Note that timeOffsetSec describes the offset to be applied to the current measurements to be in sync with the frame time data
+def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None):
+	if timeOffsetSec is None:
+		timeOffsetSec = 0.0
 	h5 = h5py.File(h5file, 'r')
 	data = h5["entry/scan/data"]
 	labels = list(data.keys())
@@ -119,12 +143,11 @@ def scanDataset(h5file, includeCurrent=False):
 			print("IOError processing %s" % h5file)
 			raise
 	if includeCurrent:
-		currentFrame = beamCurrentDataset(h5file)
+		currentFrame = beamCurrentDataset(h5file, timeOffsetSec=timeOffsetSec)
 		for ind in df.index:
 			posAfterEq = bisect_left(currentFrame.index, ind)
 			if posAfterEq == len(currentFrame.index):
-				df.loc[ind]["current"] = currentFrame.iloc[posAfterEq -
-														   1]["current"]
+				df.loc[ind]["current"] = currentFrame.iloc[posAfterEq - 1]["current"]
 			elif posAfterEq == 0 or currentFrame.index[posAfterEq] == ind:
 				df.loc[ind]["current"] = currentFrame.iloc[posAfterEq][
 					"current"]
@@ -145,7 +168,6 @@ def scanDataset(h5file, includeCurrent=False):
 				df.loc[ind]["current"] = cur
 	df = df.sort_values("time", ascending=True)
 	return df
-
 
 def imageDataset(h5file,
 				 image_key=0,
