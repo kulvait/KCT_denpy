@@ -11,6 +11,7 @@ import logging
 import os
 import pandas as pd
 import numpy as np
+import sys
 from bisect import bisect_left
 
 # Create a logger specific to this module
@@ -126,7 +127,7 @@ def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None):
 	data = h5["entry/scan/data"]
 	labels = list(data.keys())
 	if len(labels) < 1:
-		sys.exit("Error: labels count is %d!" % (labels.count))
+		sys.exit("Error: labels count is %d!" % (len(labels)))
 	#There always shall be image_key entry
 	if includeCurrent:
 		df = pd.DataFrame(columns=labels + ["current", "time"],
