@@ -4,7 +4,7 @@
 Processing of h5 format used to output Petra III data
 
 @author: Vojtech Kulvait
-@date: 2022-2024
+@date: 2022-2025
 """
 import h5py
 import logging
@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 import sys
 from bisect import bisect_left
+from scipy.signal import find_peaks
 
 # Create a logger specific to this module
 log = logging.getLogger(__name__)
@@ -43,6 +44,66 @@ def _insertToDf(df, dat, name):
 			raise IOError(
 				"Can not insert value=%s into the column=%s because related time=%s is not in index"
 				% (v, name, t))
+
+
+def findInsertionEvents(h5file, timeOffsetSec=None, zeroTime=None):
+	"""
+	Finds insertion events in a PETRA III HDF5 file.
+	
+	Parameters:
+		h5file (str): Path to the HDF5 file.
+		timeOffsetSec (float, optional): Time offset in seconds to adjust timestamps from h5 file.
+		zeroTime (int, optional): If specified, then start_time, end_time and mid_time will be returned as second offset relative to this value.
+		
+	Returns:
+		List of insertion events with timestamps and values.
+	"""
+	if timeOffsetSec is None:
+		timestampadjustment = np.int64(0)
+	else:
+		timestampadjustment = np.int64(timeOffsetSec * 1000)
+	# Open the HDF5 file containing PETRA III scan metadata
+	h5 = h5py.File(h5file, 'r')
+	# Get beam current data with provided time offset
+	beamCurrentData = beamCurrentDataset(h5file, timeOffsetSec=timeOffsetSec)
+	if zeroTime is not None:
+		beamCurrentTimes = [(x - zeroTime).to_pytimedelta().total_seconds() for x in beamCurrentData["time"]]
+	else:
+		beamCurrentTimes = beamCurrentData["time"]
+	beamCurrentValues = beamCurrentData["current"].to_numpy()
+	# 1. Find local minima and maxima
+	min_indices, _ = find_peaks(-beamCurrentValues, distance=5)
+	max_indices, _ = find_peaks(beamCurrentValues, distance=5)
+	# 2. Pair each min with next max
+	insertion_events = []
+	i = j = 0
+	while i < len(min_indices) and j < len(max_indices):
+		min_idx = min_indices[i]
+		max_idx = max_indices[j]
+		if max_idx > min_idx:
+			# 3. Validate monotonic increase between min and max
+			segment = beamCurrentValues[min_idx:max_idx+1]
+			if np.all(np.diff(segment) >= 0):  # monotonic non-decreasing
+				# Optionally: filter by time or value thresholds
+				if zeroTime is not None:
+					dt = beamCurrentTimes[max_idx] - beamCurrentTimes[min_idx]
+				else:
+					dt = (beamCurrentTimes.iloc[max_idx] - beamCurrentTimes.iloc[min_idx]).to_pytimedelta().total_seconds()
+				dI = beamCurrentValues[max_idx] - beamCurrentValues[min_idx]
+				if 1.0 < dt < 60.0 and dI > 0.05:  # tune these as needed
+					insertion_events.append({
+						"start_index": min_idx,
+						"end_index": max_idx,
+						"start_time": beamCurrentTimes[min_idx],
+						"end_time": beamCurrentTimes[max_idx],
+						"mid_time": 0.5*(beamCurrentTimes[min_idx]+beamCurrentTimes[max_idx]),
+						"current_increase": dI,
+						"duration_sec": dt
+					})
+			i += 1
+		else:
+			j += 1
+	return insertion_events
 
 
 # This function extracts beam current readings from PETRA III scan HDF5 files.
