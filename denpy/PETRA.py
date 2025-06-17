@@ -51,7 +51,7 @@ def findInsertionEvents(h5file, timeOffsetSec=None, zeroTime=None):
 	Finds insertion events in a PETRA III HDF5 file.
 	
 	Parameters:
-		h5file (str): Path to the HDF5 file.
+		h5file (str or h5py.File): Path to the HDF5 file or an open HDF5 file object.
 		timeOffsetSec (float, optional): Time offset in seconds to adjust timestamps from h5 file.
 		zeroTime (int, optional): If specified, then start_time, end_time and mid_time will be returned as second offset relative to this value.
 		
@@ -62,10 +62,15 @@ def findInsertionEvents(h5file, timeOffsetSec=None, zeroTime=None):
 		timestampadjustment = np.int64(0)
 	else:
 		timestampadjustment = np.int64(timeOffsetSec * 1000)
-	# Open the HDF5 file containing PETRA III scan metadata
-	h5 = h5py.File(h5file, 'r')
+	# Determine if h5file is a file path or already an h5py.File object
+	h5_opened_here = False
+	if isinstance(h5file, str):
+		h5 = h5py.File(h5file, 'r')
+		h5_opened_here = True
+	else:
+		h5 = h5file
 	# Get beam current data with provided time offset
-	beamCurrentData = beamCurrentDataset(h5file, timeOffsetSec=timeOffsetSec)
+	beamCurrentData = beamCurrentDataset(h5, timeOffsetSec=timeOffsetSec)
 	if zeroTime is not None:
 		beamCurrentTimes = [(x - zeroTime).to_pytimedelta().total_seconds() for x in beamCurrentData["time"]]
 	else:
@@ -103,6 +108,9 @@ def findInsertionEvents(h5file, timeOffsetSec=None, zeroTime=None):
 			i += 1
 		else:
 			j += 1
+	# Close the HDF5 file if it was opened here
+	if h5_opened_here:
+		h5.close()
 	return insertion_events
 
 
@@ -116,8 +124,13 @@ def beamCurrentDataset(h5file, timeOffsetSec=None):
 		timestampadjustment = np.int64(0)
 	else:
 		timestampadjustment = np.int64(timeOffsetSec * 1000)
-	# Open the HDF5 file containing PETRA III scan metadata
-	h5 = h5py.File(h5file, 'r')
+	# Determine if h5file is a file path or already an h5py.File object
+	h5_opened_here = False
+	if isinstance(h5file, str):
+		h5 = h5py.File(h5file, 'r')
+		h5_opened_here = True
+	else:
+		h5 = h5file
 	# Extract raw timestamp IDs (in milliseconds since epoch)
 	ID = list(h5["entry/hardware/beam_current/current/time"])
 	# Convert raw timestamps to datetime objects for human-readable interpretation
@@ -142,6 +155,9 @@ def beamCurrentDataset(h5file, timeOffsetSec=None):
 		df.index = (df.index + timestampadjustment).astype(np.uint64) # Adjustment in milliseconds
 		# Update the time column to reflect the adjusted timestamps
 		df.time = pd.to_datetime(df.index, unit="ms")
+	# Close the HDF5 file if it was opened here
+	if h5_opened_here:
+		h5.close()
 	return df
 
 def getExperimentInfo(h5file, overrideMagnification=None): 
