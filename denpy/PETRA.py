@@ -330,9 +330,9 @@ def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None):
 		for ind in df.index:
 			posAfterEq = bisect_left(currentFrame.index, ind)
 			if posAfterEq == len(currentFrame.index):
-				df.loc[ind]["current"] = currentFrame.iloc[posAfterEq - 1]["current"]
+				df.loc[ind, "current"] = currentFrame.iloc[posAfterEq - 1]["current"]
 			elif posAfterEq == 0 or currentFrame.index[posAfterEq] == ind:
-				df.loc[ind]["current"] = currentFrame.iloc[posAfterEq]["current"]
+				df.loc[ind, "current"] = currentFrame.iloc[posAfterEq]["current"]
 			else:
 				t0 = float(currentFrame.index[posAfterEq - 1])
 				cur0 = float(currentFrame.iloc[posAfterEq - 1]["current"])
@@ -344,7 +344,7 @@ def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None):
 					print("Cur is NaN t0=%f cur0=%f t1=%f cur1=%f t=%f ind=%d posAfterEq=%d len(currentFrame)=%d!" %
 					      (t0, cur0, t1, cur1, t, ind, posAfterEq, len(currentFrame)))
 					raise ValueError("Interpolation error producing NaN beam curent.")
-				df.loc[ind]["current"] = cur
+				df.loc[ind, "current"] = cur
 	df = df.sort_values("time", ascending=True)
 	return df
 
