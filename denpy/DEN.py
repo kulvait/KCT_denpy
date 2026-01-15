@@ -10,6 +10,7 @@ DEN and DICOM IO manipulation
 
 """
 import numpy as np
+import warnings
 import os
 
 #np.arrays are by default in row-major order and they are indexed as follows
@@ -128,8 +129,14 @@ def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
 		raise IOError(
 			'File %s already exists, no data written, add force=True to overwrite.'
 			% (fileName))
-	if not isinstance(dataFrame, np.ndarray):
-		raise TypeError('Object dataFrame has to be of type numpy.array')
+	if not isinstance(dataFrame, np.ndarray) or getattr(dataFrame, 'shape', None) is None:
+		# Get safe info about the object
+		obj_type = type(dataFrame)
+		obj_shape = getattr(dataFrame, 'shape', 'unknown')
+		raise TypeError(
+			f"storeNdarrayAsDEN: Expected a valid numpy.ndarray, got object of type {obj_type} "
+			f"with shape {obj_shape}."
+		)
 	dimspec = np.flip(dataFrame.shape, axis=0)
 	writeExtendedHeader(fileName,
 						dimspec,
