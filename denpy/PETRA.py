@@ -268,6 +268,9 @@ def insert_label(df, data, label_name, key_col="image_key"):
 	"""
 	time_ds = np.array(data[f"{label_name}/time"])
 	value_ds = np.array(data[f"{label_name}/value"])
+	# In the situation time_ds and value_ds are empty, raise ValueError
+	if len(time_ds) == 0 and len(value_ds) == 0:
+		raise ValueError(f"{label_name} has empty time and value datasets.")
 	if h5py.__version__.startswith("3") and value_ds.dtype.kind == 'O':
 		value_ds = value_ds.asstr()[:]
 	# Case 1: Full DataFrame
@@ -310,10 +313,9 @@ def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None):
 	for lab in labels:
 		if lab not in ["image_key", "image_file"]:
 			try:
-				df = insert_label(df, data, lab, key_col="image_key")
+				df = insert_label(df.copy(deep=True), data, lab, key_col="image_key")  # Test on a copy to avoid partial insertions
 			except ValueError as ve:
-				print(f"ValueError inserting label '{lab}' into DataFrame from file {abs_h5file}: {ve}")
-				raise
+				print(f"Label '{lab}' not inserted into DataFrame from file {abs_h5file}: {ve}")
 	# Normalize timestamps to ensure strictly increasing index
 	time_values = df["time"].values.astype(np.int64)
 	if not all(np.diff(time_values) > 0):
