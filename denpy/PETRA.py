@@ -149,6 +149,22 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 	h5 = h5py.File(h5file, 'r')
 	info = {}
 	info["h5"] = os.path.realpath(h5file)
+	if 'entry/beamline/experiment' in h5:
+		info["experiment"] = h5['entry/beamline/experiment'][()].decode('utf-8')
+	if 'entry/beamline/name' in h5:
+		info["beamline"] = h5['entry/beamline/name'][()].decode('utf-8')
+	# Extract start and end times from the image_file dataset if available
+	if 'entry/scan/data/image_file/time' in h5:
+		image_file_time = pd.to_datetime(h5['entry/scan/data/image_file/time'][:], unit="ms")
+		if len(image_file_time) > 0:
+			start = image_file_time.min()
+			end = image_file_time.max()
+			info["start_date_time"] = start.strftime("%d.%m.%Y %H:%M:%S")
+			info["end_date_time"] = end.strftime("%d.%m.%Y %H:%M:%S")
+			info["duration_sec"] = (end - start).total_seconds()
+			info["acquired_frames_count"] = len(image_file_time)
+			info["frame_rate_fps"] = len(image_file_time) / info["duration_sec"] if info["duration_sec"] > 0 else None
+	info["h5_name"] = os.path.basename(h5file)
 	setup = {}
 	camera = {}
 	if 'entry/scan/setup' in h5:
