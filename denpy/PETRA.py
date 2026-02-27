@@ -148,7 +148,7 @@ def beamCurrentDataset(h5file, timeOffsetSec=None):
 def getExperimentInfo(h5file, overrideMagnification=None):
 	h5 = h5py.File(h5file, 'r')
 	info = {}
-	info["h5"] = os.path.abspath(h5file)
+	info["h5"] = os.path.realpath(h5file)
 	setup = {}
 	camera = {}
 	if 'entry/scan/setup' in h5:
