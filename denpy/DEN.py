@@ -32,6 +32,9 @@ def getFrame(fileName,
 			 col_to=None,
 			 dtype=None):
 	info = readHeader(fileName)
+	if info["dimcount"] < 2:
+		raise TypeError("File %s has dimension %d, expected >= 2. Call getNumpyArray instead!" %
+						(fileName, info["dimcount"]))
 	columns = info["shape"][-1]
 	rows = info["shape"][-2]
 	if row_from is None:
@@ -42,23 +45,32 @@ def getFrame(fileName,
 		col_from = 0
 	if col_to is None:
 		col_to = columns
-	f = open(fileName, "rb")
+	if info["dimcount"] == 2:
+		if k == 0:
+			data = getNumpyArray(fileName)
+			return data[row_from:row_to, col_from:col_to]
+		else:
+			raise TypeError("File is 2D but k is not 0!")
 	#For more than 3D arrays
 	if info["dimcount"] > 3:
+		if not isinstance(k, (list, tuple)):
+			raise TypeError("Index k must be a list of dimension %d!" %
+							(info["dimcount"] - 2))
 		if len(k) != info["dimcount"] - 2:
 			raise TypeError("Index must be a list of dimension %d!" %
 							(info["dimcount"] - 2))
 		dim = info["dimspec"][2:]
 		blockIncrement = 1
 		zindex = 0
-		for i in ind:
+		for i in range(len(k)):
 			zindex = zindex + k[i] * blockIncrement
 			blockIncrement = blockIncrement * dim[i]
 	else:
 		zindex = k
-	offset = info["offset"] + rows * columns * info["elementbytesize"] * zindex
-	f.seek(offset, os.SEEK_SET)
-	data = np.fromfile(f, dtype=info["type"], count=rows * columns)
+	with open(fileName, "rb") as f:
+		offset = info["offset"] + rows * columns * info["elementbytesize"] * zindex
+		f.seek(offset, os.SEEK_SET)
+		data = np.fromfile(f, dtype=info["type"], count=rows * columns)
 	if info["majority"] == 0:
 		newdata = data.reshape((rows, columns))
 		newdata = newdata[row_from:row_to, col_from:col_to]
@@ -104,24 +116,25 @@ def writeFrame(fileName, k, data, force=False):
 	f.close()
 
 
-# Indexing of array is [z,y,x] to get x[2] as a third frame
+# Indexing of array is [z,y,x] to get x[2]
+# Get full multiindex array
+# Ignore majority for 1D arrays
 def getNumpyArray(fileName):
 	info = readHeader(fileName)
-	f = open(fileName, "rb")
-	f.seek(info["offset"], os.SEEK_SET)
-	if info["majority"] == 0:
+	with open(fileName, "rb") as f:
+		f.seek(info["offset"], os.SEEK_SET)
 		data = np.fromfile(f, dtype=info["type"], count=np.prod(info["shape"]))
-		data = data.reshape(info["shape"])
+	
+	if info["majority"] == 1 and data.ndim >= 2:
+		dimx = info["dimspec"][0]
+		dimy = info["dimspec"][1]
+		stored_shape = list(info["shape"])
+		stored_shape[-1], stored_shape[-2] = stored_shape[-2], stored_shape[-1]
+		data = data.reshape(stored_shape)
+		data = np.swapaxes(data, -1, -2)
 	else:
-		data = np.zeros(np.prod(info["shape"]))
-		dimspec = info["dimspec"]
-		dimx = dimspec[0]
-		dimy = dimspec[1]
-		dimzextended = np.prod(info["dimspec"][2:])
-		data = data.reshape((dimzextended, dimy, dimx))
-		for i in range(dimzextended):
-			data[i] = getFrame(fileName, i)
-	return (data)
+		data = data.reshape(info["shape"])
+	return data
 
 
 def storeNdarrayAsDEN(fileName, dataFrame, ymajor=0, force=False):
