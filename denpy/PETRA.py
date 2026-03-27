@@ -4,7 +4,7 @@
 Processing of h5 format used to output Petra III data
 
 @author: Vojtech Kulvait
-@date: 2022-2025
+@date: 2022-2026
 """
 import h5py
 import logging
@@ -161,9 +161,16 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 			end = image_file_time.max()
 			info["start_date_time"] = start.strftime("%d.%m.%Y %H:%M:%S")
 			info["end_date_time"] = end.strftime("%d.%m.%Y %H:%M:%S")
-			info["duration_sec"] = (end - start).total_seconds()
-			info["acquired_frames_count"] = len(image_file_time)
-			info["frame_rate_fps"] = len(image_file_time) / info["duration_sec"] if info["duration_sec"] > 0 else None
+			info["scan_frame_count"] = len(image_file_time)
+			info["scan_duration_sec"] = (end - start).total_seconds()
+			info["scan_fps"] = len(image_file_time) / info["duration_sec"] if info["duration_sec"] > 0 else None
+		if 'entry/scan/data/image_key/value' in h5:
+			image_file_key = h5['entry/scan/data/image_key/value'][:]
+			image_times = image_file_time[image_file_key == 0]  # Assuming key 0 corresponds to actual frames
+			if len(image_times) > 0:
+				info["sample_frame_count"] = len(image_times)
+				info["sample_duration_sec"] = (image_times.max() - image_times.min()).total_seconds()
+				info["sample_fps"] = len(image_times) / info["sample_duration_sec"] if info["sample_duration_sec"] > 0 else None
 	info["h5_name"] = os.path.basename(h5file)
 	setup = {}
 	camera = {}
@@ -192,7 +199,10 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 			camera["magnification"] = overrideMagnification
 		if "magnification" in camera and "pixelsize" in camera:
 			info["pix_size"] = camera["pixelsize"] / camera["magnification"]
-			info["pix_size_cam"] = camera["pixelsize"]
+			if "sensorsize_x" in camera:
+				info["field_of_view_x"] = info["pix_size"] * camera["sensorsize_x"]
+			if "sensorsize_y" in camera:
+				info["field_of_view_y"] = info["pix_size"] * camera["sensorsize_y"]
 	info["setup"] = setup
 	info["camera"] = camera
 	return info

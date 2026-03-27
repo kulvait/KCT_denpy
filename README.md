@@ -144,7 +144,7 @@ In the `scripts` directory, you can find example scripts and useful tools for wo
 
 Unless otherwise specified in the source files, this project is licensed under the GNU General Public License v3.0.
 
-Copyright (C) 2018-2024 Vojtěch Kulvait
+Copyright (C) 2018-2026 Vojtěch Kulvait
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
