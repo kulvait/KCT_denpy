@@ -144,15 +144,31 @@ def beamCurrentDataset(h5file, timeOffsetSec=None):
 		h5.close()
 	return df
 
+#Sometimes values as entry/beamline/experiment are stored as () shape but sometimes as (1,) shape
+#This function extracts the string value from either case, ensuring consistent output regardless of the original shape.
+def extractStringEntry(h5, path):
+	if path in h5:
+		value = h5[path][()]
+		if isinstance(value, bytes):
+			return value.decode('utf-8')
+		elif isinstance(value, np.ndarray) and value.shape == (1,):
+			return value[0].decode('utf-8') if isinstance(value[0], bytes) else str(value[0])
+		else:
+			return str(value)
+	else:
+		log.warning("The path '%s' does not exist in %s." % (path, os.path.realpath(h5.filename)))
+		return None
 
 def getExperimentInfo(h5file, overrideMagnification=None):
 	h5 = h5py.File(h5file, 'r')
 	info = {}
 	info["h5"] = os.path.realpath(h5file)
-	if 'entry/beamline/experiment' in h5:
-		info["experiment"] = h5['entry/beamline/experiment'][()].decode('utf-8')
-	if 'entry/beamline/name' in h5:
-		info["beamline"] = h5['entry/beamline/name'][()].decode('utf-8')
+	experimentString = extractStringEntry(h5, 'entry/beamline/experiment')
+	if experimentString is not None:
+		info["experiment"] = experimentString
+	beamlineString = extractStringEntry(h5, 'entry/beamline/name')
+	if beamlineString is not None:
+		info["beamline"] = beamlineString
 	# Extract start and end times from the image_file dataset if available
 	if 'entry/scan/data/image_file/time' in h5:
 		image_file_time = pd.to_datetime(h5['entry/scan/data/image_file/time'][:], unit="ms")
@@ -163,7 +179,7 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 			info["end_date_time"] = end.strftime("%d.%m.%Y %H:%M:%S")
 			info["scan_frame_count"] = len(image_file_time)
 			info["scan_duration_sec"] = (end - start).total_seconds()
-			info["scan_fps"] = len(image_file_time) / info["duration_sec"] if info["duration_sec"] > 0 else None
+			info["scan_fps"] = len(image_file_time) / info["scan_duration_sec"] if info["scan_duration_sec"] > 0 else None
 		if 'entry/scan/data/image_key/value' in h5:
 			image_file_key = h5['entry/scan/data/image_key/value'][:]
 			image_times = image_file_time[image_file_key == 0]  # Assuming key 0 corresponds to actual frames
