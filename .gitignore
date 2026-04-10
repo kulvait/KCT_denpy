@@ -1,3 +1,6 @@
 *.pic
+*.egg
+*.egg-info
 __pycache__
-denpy.egg-info
+build
+dist
