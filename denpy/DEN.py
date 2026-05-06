@@ -31,6 +31,11 @@ def getFrame(fileName,
 			 col_from=None,
 			 col_to=None,
 			 dtype=None):
+	if not isinstance(k, (int, np.integer)) or isinstance(k, bool):
+		raise TypeError("Index k must be an integer, got %s of type %s!" % (k, type(k)))
+	k = int(k)  # Convert to standard Python integer type
+	if k < 0:
+		raise ValueError("Index k must be non-negative, got %d!" % k)
 	info = readHeader(fileName)
 	if info["dimcount"] < 2:
 		raise TypeError("File %s has dimension %d, expected >= 2. Call getNumpyArray instead!" %

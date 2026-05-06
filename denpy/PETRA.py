@@ -7,7 +7,6 @@ Processing of h5 format used to output Petra III data
 @date: 2022-2026
 """
 import h5py
-import logging
 import os
 import pandas as pd
 import numpy as np
@@ -15,17 +14,19 @@ import sys
 from bisect import bisect_left
 from scipy.signal import find_peaks
 
+import logging
 # Create a logger specific to this module
 log = logging.getLogger(__name__)
-log.setLevel(logging.INFO)  # Set the logging level to INFO
+log.setLevel(logging.INFO) # Set the logging level to INFO
 # Create a console handler and set its level to INFO
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 # Create a formatter and set it for the handler
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(asctime)s - %(name)s:%(lineno)d - %(levelname)s : %(message)s', datefmt='%d.%m.%Y %H:%M:%S')
 ch.setFormatter(formatter)
 # Add the handler to the logger
 log.addHandler(ch)
+log.propagate = False # Prevent log messages from being propagated to the root logger
 
 
 def findInsertionEvents(h5file, timeOffsetSec=None, zeroTime=None):
@@ -221,6 +222,16 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 				info["field_of_view_y"] = info["pix_size"] * camera["sensorsize_y"]
 	info["setup"] = setup
 	info["camera"] = camera
+	if "entry/scan/setup/pos_o_ccd_dist" in h5:
+		pos_o_ccd_dist = h5['entry/scan/setup/pos_o_ccd_dist'][()][0]
+		info["propagation_distance_mm"] = round(pos_o_ccd_dist, 0)
+	energy_keV = None
+	if "entry/scan/setup/pos_p05_energy" in h5:
+		energy_keV = h5['entry/scan/setup/pos_p05_energy'][()][0]/1000
+	elif "entry/scan/setup/pos_p07_energy" in h5:
+		energy_keV = h5['entry/scan/setup/pos_p07_energy'][()][0]/1000
+	if energy_keV is not None:
+		info["energy_keV"] = round(energy_keV, 3)
 	return info
 
 
@@ -284,7 +295,7 @@ def getBasicDatasetInfo(h5file):
 			duplicates["orig_index"] = duplicates.index
 			n_duplicated_times = duplicates['time'].nunique()
 			abs_h5file = os.path.abspath(h5file)
-			print("WARNING: There is %d duplicated entries in %d distinct times in file %s." %
+			log.warning("There is %d duplicated entries in %d distinct times in file %s." %
 			      (len(duplicates), n_duplicated_times, abs_h5file))
 			# Build key sets per time
 			times_to_duplicates = duplicates.groupby('time')['image_key'].apply(list).to_dict()
@@ -298,7 +309,7 @@ def getBasicDatasetInfo(h5file):
 				# Format as "file (id=index)"
 				affected_str_list = [f"{f} (id={i})" for f, i in zip(affected['image_file'], affected['orig_index'])]
 				affected_str = ", ".join(affected_str_list)
-				print(f"key_set=[{formatted_key_set}], n_times={group['time'].nunique()}, "
+				log.warning(f"key_set=[{formatted_key_set}], n_times={group['time'].nunique()}, "
 				      f"first_time={first_time}, affected_files={affected_str}")
 		return df
 
@@ -361,7 +372,7 @@ def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None):
 	# Normalize timestamps to ensure strictly increasing index
 	time_values = df["time"].values.astype(np.int64)
 	if not all(np.diff(time_values) > 0):
-		print("WARNING: Non-increasing timestamps detected in file %s; normalizing timestamps." % abs_h5file)
+		log.warning("Non-increasing timestamps detected in file %s; normalizing timestamps." % abs_h5file)
 		normalized_time = normalize_timestamps_preserve_increase(df["time"].values)
 		df["time"] = normalized_time
 	# Set index to time for further processing
