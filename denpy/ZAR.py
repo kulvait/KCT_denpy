@@ -121,14 +121,12 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None):
 			codecs_chain.append(zarr.get_codec({"id": Jpegxr.codec_id}))
 		elif name == "jpeg2k":
 			#For Zarr v3 there is still no functional JPEG 2000 codec, but we can use the imagecodecs implementation as a custom codec in the chain
-			from imagecodecs.zarr import register_codecs, get_codec, Jpeg2k
-			register_codecs()  # Ensure the codec is registered
-			print(f"Zarr v3: Using JPEG 2000 codec with clevel={clevel}. Note: For lossless compression, use clevel=0.")
-			#zarr.register_codecs(Jpeg2k)  # Ensure the codec is registered
+			from imagecodecs.zarr import Jpeg2k
+			#"Zarr v3: Using JPEG 2000 codec with clevel={clevel}. Note: For lossless compression, use clevel=0."
 			if clevel == 0:
-				jp2_codec = get_codec({"id": Jpeg2k.codec_id, "bitspersample": 12, "reversible": True, "colorspace": "GRAY", "mct": False})
+				jp2_codec = Jpeg2k(reversible=True, colorspace="GRAY", mct=False, bitspersample=12)
 			else:
-				jp2_codec = get_codec({"id": Jpeg2k.codec_id, "bitspersample": 12, "reversible": False, "colorspace": "GRAY", "mct": False, "level": clevel})
+				jp2_codec = Jpeg2k(reversible=False, colorspace="GRAY", mct=False, bitspersample=12, level=clevel)
 			codecs_chain.append(jp2_codec)
 			# Try level 5, for lossy implementation, use reversible=False
 		elif name == "blosc" or name == "blosc-blosclz":
