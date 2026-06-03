@@ -77,17 +77,17 @@ def findInsertionEvents(h5file, timeOffsetSec=None, zeroTime=None):
 					dt = beamCurrentTimes[max_idx] - beamCurrentTimes[min_idx]
 				else:
 					dt = (beamCurrentTimes.iloc[max_idx] -
-					      beamCurrentTimes.iloc[min_idx]).to_pytimedelta().total_seconds()
+						  beamCurrentTimes.iloc[min_idx]).to_pytimedelta().total_seconds()
 				dI = beamCurrentValues[max_idx] - beamCurrentValues[min_idx]
 				if 1.0 < dt < 10.0 and dI > 0.5:  # tune these as needed
 					insertion_events.append({
-					    "start_index": min_idx,
-					    "end_index": max_idx,
-					    "start_time": beamCurrentTimes[min_idx],
-					    "end_time": beamCurrentTimes[max_idx],
-					    "mid_time": 0.5 * (beamCurrentTimes[min_idx] + beamCurrentTimes[max_idx]),
-					    "current_increase": dI,
-					    "duration_sec": dt
+						"start_index": min_idx,
+						"end_index": max_idx,
+						"start_time": beamCurrentTimes[min_idx],
+						"end_time": beamCurrentTimes[max_idx],
+						"mid_time": 0.5 * (beamCurrentTimes[min_idx] + beamCurrentTimes[max_idx]),
+						"current_increase": dI,
+						"duration_sec": dt
 					})
 			i += 1
 		else:
@@ -145,15 +145,46 @@ def beamCurrentDataset(h5file, timeOffsetSec=None):
 		h5.close()
 	return df
 
+
+def read_scalar_h5(item):
+	"""
+	Read a scalar value from an h5py dataset robustly.
+
+	Handles:
+	  - shape ()		   -> 0-d array / numpy scalar
+	  - shape (1,)		   -> 1-element array
+	  - bytes / np.bytes_  -> decoded to str (utf-8, replace on error)
+	  - numpy scalars	   -> converted to native Python types
+	Returns None for empty datasets.
+	"""
+	val = item[()]
+	# Unwrap 1-element arrays; keep 0-d as-is
+	if isinstance(val, np.ndarray):
+		if val.shape == (1,):
+			val = val[0]
+		elif val.shape == ():
+			val = val.item()
+		elif val.size == 0:
+			return None
+		# else: leave as ndarray (caller may want the array)
+	# numpy scalar -> Python scalar (np.bytes_.item() returns bytes, handled below)
+	if isinstance(val, np.generic):
+		val = val.item()
+	# Decode bytes to str
+	if isinstance(val, (bytes, bytearray)):
+		try:
+			val = val.decode("utf-8")
+		except UnicodeDecodeError:
+			val = val.decode("utf-8", errors="replace")
+	return val
+
 #Sometimes values as entry/beamline/experiment are stored as () shape but sometimes as (1,) shape
 #This function extracts the string value from either case, ensuring consistent output regardless of the original shape.
 def extractStringEntry(h5, path):
 	if path in h5:
-		value = h5[path][()]
-		if isinstance(value, bytes):
-			return value.decode('utf-8')
-		elif isinstance(value, np.ndarray) and value.shape == (1,):
-			return value[0].decode('utf-8') if isinstance(value[0], bytes) else str(value[0])
+		value = read_scalar_h5(h5[path])
+		if isinstance(value, str):
+			return value
 		else:
 			return str(value)
 	else:
@@ -183,7 +214,7 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 			info["scan_fps"] = len(image_file_time) / info["scan_duration_sec"] if info["scan_duration_sec"] > 0 else None
 		if 'entry/scan/data/image_key/value' in h5:
 			image_file_key = h5['entry/scan/data/image_key/value'][:]
-			image_times = image_file_time[image_file_key == 0]  # Assuming key 0 corresponds to actual frames
+			image_times = image_file_time[image_file_key == 0] # Assuming key 0 corresponds to actual frames
 			if len(image_times) > 0:
 				info["sample_frame_count"] = len(image_times)
 				info["sample_duration_sec"] = (image_times.max() - image_times.min()).total_seconds()
@@ -211,7 +242,7 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 	if camera_group is not None:
 		for key in camera_group.keys():
 			# Assuming each entry is a dataset containing a single double value
-			camera[key] = camera_group[key][()][0]
+			camera[key] = read_scalar_h5(camera_group[key])
 		if overrideMagnification is not None:
 			camera["magnification"] = overrideMagnification
 		if "magnification" in camera and "pixelsize" in camera:
@@ -223,13 +254,13 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 	info["setup"] = setup
 	info["camera"] = camera
 	if "entry/scan/setup/pos_o_ccd_dist" in h5:
-		pos_o_ccd_dist = h5['entry/scan/setup/pos_o_ccd_dist'][()][0]
+		pos_o_ccd_dist = read_scalar_h5(h5['entry/scan/setup/pos_o_ccd_dist'])
 		info["propagation_distance_mm"] = round(pos_o_ccd_dist, 0)
 	energy_keV = None
 	if "entry/scan/setup/pos_p05_energy" in h5:
-		energy_keV = h5['entry/scan/setup/pos_p05_energy'][()][0]/1000
+		energy_keV = read_scalar_h5(h5['entry/scan/setup/pos_p05_energy']) / 1000
 	elif "entry/scan/setup/pos_p07_energy" in h5:
-		energy_keV = h5['entry/scan/setup/pos_p07_energy'][()][0]/1000
+		energy_keV = read_scalar_h5(h5['entry/scan/setup/pos_p07_energy']) / 1000
 	if energy_keV is not None:
 		info["energy_keV"] = round(energy_keV, 3)
 	return info
@@ -250,7 +281,7 @@ def _insertToDf(df, dat, name):
 			df.loc[t][name] = v
 		else:
 			raise IOError("Can not insert value=%s into the column=%s because related time=%s is not in index" %
-			              (v, name, t))
+						  (v, name, t))
 
 
 def normalize_timestamps_preserve_increase(old_ts):
@@ -283,7 +314,7 @@ def getBasicDatasetInfo(h5file):
 		lengths = [len(key_time), len(key_value), len(file_time), len(file_value)]
 		if len(set(lengths)) != 1:
 			raise ValueError(f"Length mismatch: key_time={len(key_time)}, key_value={len(key_value)}, "
-			                 f"file_time={len(file_time)}, file_value={len(file_value)}")
+							 f"file_time={len(file_time)}, file_value={len(file_value)}")
 		if not np.array_equal(key_time, file_time):
 			raise ValueError("Time arrays for image_key and image_file do not match.")
 		# Create a DataFrame
@@ -296,7 +327,7 @@ def getBasicDatasetInfo(h5file):
 			n_duplicated_times = duplicates['time'].nunique()
 			abs_h5file = os.path.abspath(h5file)
 			log.warning("There is %d duplicated entries in %d distinct times in file %s." %
-			      (len(duplicates), n_duplicated_times, abs_h5file))
+				  (len(duplicates), n_duplicated_times, abs_h5file))
 			# Build key sets per time
 			times_to_duplicates = duplicates.groupby('time')['image_key'].apply(list).to_dict()
 			duplicates = duplicates.sort_values(by=['time', 'image_key'])
@@ -310,7 +341,7 @@ def getBasicDatasetInfo(h5file):
 				affected_str_list = [f"{f} (id={i})" for f, i in zip(affected['image_file'], affected['orig_index'])]
 				affected_str = ", ".join(affected_str_list)
 				log.warning(f"key_set=[{formatted_key_set}], n_times={group['time'].nunique()}, "
-				      f"first_time={first_time}, affected_files={affected_str}")
+					  f"first_time={first_time}, affected_files={affected_str}")
 		return df
 
 
@@ -335,15 +366,15 @@ def insert_label(df, data, label_name, key_col="image_key"):
 	# Case 2: Subsets based on key filters
 	# Define candidate filters
 	filters = [
-	    (df[key_col] != 2),  # exclude key==2
-	    ((df[key_col] != 2) & (df[key_col] != 1))  # exclude key 1 and 2
+		(df[key_col] != 2),  # exclude key==2
+		((df[key_col] != 2) & (df[key_col] != 1))  # exclude key 1 and 2
 	]
 	for mask in filters:
 		if mask.sum() == len(time_ds):
 			# Candidate subset length matches
 			if not np.all(time_ds == df.loc[mask, "time"].values):
 				raise ValueError(f"{label_name}/time shape matches subset ({mask.sum()} rows) "
-				                 "but timestamps do not align exactly.")
+								 "but timestamps do not align exactly.")
 			df.loc[mask, label_name] = value_ds
 			return df
 	# If no matching subset found, raise error
@@ -397,7 +428,7 @@ def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None):
 				cur = cur0 + ((t - t0) / (t1 - t0)) * (cur1 - cur0)
 				if np.isnan(cur):
 					print("Cur is NaN t0=%f cur0=%f t1=%f cur1=%f t=%f ind=%d posAfterEq=%d len(currentFrame)=%d!" %
-					      (t0, cur0, t1, cur1, t, ind, posAfterEq, len(currentFrame)))
+						  (t0, cur0, t1, cur1, t, ind, posAfterEq, len(currentFrame)))
 					raise ValueError("Interpolation error producing NaN beam curent.")
 				df.loc[ind, "current"] = cur
 	df = df.sort_values("time", ascending=True)
