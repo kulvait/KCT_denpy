@@ -130,7 +130,7 @@ def getNumpyArray(fileName):
 		f.seek(info["offset"], os.SEEK_SET)
 		data = np.fromfile(f, dtype=info["type"], count=np.prod(info["shape"]))
 	
-	if info["majority"] == 1 and data.ndim >= 2:
+	if info["majority"] == 1 and info["dimcount"] > 1:
 		dimx = info["dimspec"][0]
 		dimy = info["dimspec"][1]
 		stored_shape = list(info["shape"])
