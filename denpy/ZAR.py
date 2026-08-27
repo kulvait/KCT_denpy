@@ -80,7 +80,8 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None):
 			register_codecs()
 			return Avif(bitspersample=12, numthreads=os.cpu_count())  # Return the codec instance directly for Zarr v2
 		elif name == "jpegxr":
-			from imagecodecs.numcodecs import Jpegxr
+			from imagecodecs.numcodecs import Jpegxr, register_codecs
+			register_codecs()
 			return Jpegxr()  # Return the codec instance directly for Zarr v2
 		elif name == "jpeg2k":
 			from imagecodecs.numcodecs import register_codecs, get_codec, Jpeg2k
@@ -91,6 +92,14 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None):
 				#jp2_codec = get_codec({"id": Jpeg2k.codec_id, "bitspersample": 12, "reversible": False, "colorspace": "GRAY", "mct": False, "level": clevel})
 				jp2_codec = get_codec({"id": Jpeg2k.codec_id, "reversible": False, "colorspace": "GRAY", "mct": False, "level": clevel, "numthreads": os.cpu_count()})
 			return jp2_codec
+		elif name == "htj2k":
+			from imagecodecs.numcodecs import register_codecs, get_codec, Htj2k
+			register_codecs()  # Ensure the codec is registered
+			if clevel == 0:
+				htj2k_codec = get_codec({"id": Htj2k.codec_id, "bitspersample": 12, "reversible": True, "colorspace": "GRAY", "mct": False, "numthreads": os.cpu_count()})
+			else:
+				htj2k_codec = get_codec({"id": Htj2k.codec_id, "reversible": False, "colorspace": "GRAY", "mct": False, "level": clevel, "numthreads": os.cpu_count()})
+			return htj2k_codec
 		else:
 			raise ValueError(f"Unknown compression type: {name}")
 	else:
@@ -130,6 +139,13 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None):
 				jp2_codec = Jpeg2k(reversible=False, colorspace="GRAY", mct=False, bitspersample=12, level=clevel, numthreads=os.cpu_count())
 			codecs_chain.append(jp2_codec)
 			# Try level 5, for lossy implementation, use reversible=False
+		elif name == "htj2k":
+			from imagecodecs.zarr import Htj2k
+			if clevel == 0:
+				htj2k_codec = Htj2k(reversible=True)
+			else:
+				htj2k_codec = Htj2k(reversible=False, level=clevel)
+			codecs_chain.append(htj2k_codec)
 		elif name == "blosc" or name == "blosc-blosclz":
 			codecs_chain.append(
 				codecs.BloscCodec(
