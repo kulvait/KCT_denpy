@@ -115,35 +115,40 @@ def beamCurrentDataset(h5file, timeOffsetSec=None):
 		h5_opened_here = True
 	else:
 		h5 = h5file
-	# Extract raw timestamp IDs (in milliseconds since epoch)
-	ID = list(h5["entry/hardware/beam_current/current/time"])
-	# Convert raw timestamps to datetime objects for human-readable interpretation
-	time = list(pd.to_datetime(i, unit="ms") for i in ID)
-	# Extract beam current values (in mA) from the HDF5 file
-	value = list(h5["entry/hardware/beam_current/current/value"])
-	# Combine time and current values into a list of tuples
-	agg = list(zip(time, value))
-	# Create a DataFrame from the combined data, with timestamps as the index
-	df = pd.DataFrame(agg, columns=["time", "current"], index=ID)
-	# Remove duplicate timestamps (keep first occurrence only)
-	# This is important to avoid issues in interpolation or reindexing
-	# see https://stackoverflow.com/questions/13035764/remove-pandas-rows-with-duplicate-indices
-	df = df[~df.index.duplicated(keep='first')]
-	# Remove any rows where the index (timestamp) is exactly zero — likely invalid
-	# Remove zero index https://stackoverflow.com/questions/13851535/how-to-delete-rows-from-a-pandas-dataframe-based-on-a-conditional-expression
-	df.drop(df[df.index == 0].index, inplace=True)
-	# Sort by index (timestamp) to ensure chronological order
-	df.sort_index(inplace=True)
-	# Apply a time offset to the index (timestamp) to synchronize with external data
-	if timestampadjustment != 0:
-		# Adjustment in milliseconds
-		df.index = (df.index + timestampadjustment).astype(np.uint64)
-		# Update the time column to reflect the adjusted timestamps
-		df.time = pd.to_datetime(df.index, unit="ms")
-	# Close the HDF5 file if it was opened here
-	if h5_opened_here:
-		h5.close()
-	return df
+	try:
+		beam_current_path = "entry/hardware/beam_current"
+		if beam_current_path not in h5:
+			raise KeyError(f"Path '{beam_current_path}' not found in HDF5 file {os.path.realpath(h5.filename)}.")
+		# Extract raw timestamp IDs (in milliseconds since epoch)
+		ID = list(h5["entry/hardware/beam_current/current/time"])
+		# Convert raw timestamps to datetime objects for human-readable interpretation
+		time = list(pd.to_datetime(i, unit="ms") for i in ID)
+		# Extract beam current values (in mA) from the HDF5 file
+		value = list(h5["entry/hardware/beam_current/current/value"])
+		# Combine time and current values into a list of tuples
+		agg = list(zip(time, value))
+		# Create a DataFrame from the combined data, with timestamps as the index
+		df = pd.DataFrame(agg, columns=["time", "current"], index=ID)
+		# Remove duplicate timestamps (keep first occurrence only)
+		# This is important to avoid issues in interpolation or reindexing
+		# see https://stackoverflow.com/questions/13035764/remove-pandas-rows-with-duplicate-indices
+		df = df[~df.index.duplicated(keep='first')]
+		# Remove any rows where the index (timestamp) is exactly zero — likely invalid
+		# Remove zero index https://stackoverflow.com/questions/13851535/how-to-delete-rows-from-a-pandas-dataframe-based-on-a-conditional-expression
+		df.drop(df[df.index == 0].index, inplace=True)
+		# Sort by index (timestamp) to ensure chronological order
+		df.sort_index(inplace=True)
+		# Apply a time offset to the index (timestamp) to synchronize with external data
+		if timestampadjustment != 0:
+			# Adjustment in milliseconds
+			df.index = (df.index + timestampadjustment).astype(np.uint64)
+			# Update the time column to reflect the adjusted timestamps
+			df.time = pd.to_datetime(df.index, unit="ms")
+		# Close the HDF5 file if it was opened here
+		return df
+	finally:
+		if h5_opened_here:
+			h5.close()
 
 
 def read_scalar_h5(item):
