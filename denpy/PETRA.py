@@ -196,10 +196,19 @@ def extractStringEntry(h5, path):
 		log.warning("The path '%s' does not exist in %s." % (path, os.path.realpath(h5.filename)))
 		return None
 
+def read_group_scalars(group):
+	"""Read every dataset in a group into a dict. Subgroups are skipped."""
+	out = {}
+	for key, item in group.items():
+		if isinstance(item, h5py.Dataset):
+			out[key] = read_scalar_h5(item)
+	return out
+
 def getExperimentInfo(h5file, overrideMagnification=None):
 	h5 = h5py.File(h5file, 'r')
 	info = {}
 	info["h5"] = os.path.realpath(h5file)
+	info["h5_name"] = os.path.basename(info["h5"])
 	experimentString = extractStringEntry(h5, 'entry/beamline/experiment')
 	if experimentString is not None:
 		info["experiment"] = experimentString
@@ -224,15 +233,24 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 				info["sample_frame_count"] = len(image_times)
 				info["sample_duration_sec"] = (image_times.max() - image_times.min()).total_seconds()
 				info["sample_fps"] = len(image_times) / info["sample_duration_sec"] if info["sample_duration_sec"] > 0 else None
-	info["h5_name"] = os.path.basename(h5file)
 	setup = {}
 	camera = {}
 	if 'entry/scan/setup' in h5:
 		setup_group = h5['entry/scan/setup']
 		# Iterate over all items in the setup group
-		for key in setup_group.keys():
-			# Assuming each entry is a dataset containing a single double value
-			setup[key] = setup_group[key][()][0]
+		setup = read_group_scalars(setup_group)
+		if setup.get("pos_o_ccd_dist") is not None:
+			info["propagation_distance_mm"] = round(setup["pos_o_ccd_dist"], 0)
+		elif setup.get("o_ccd_dist") is not None:
+			info["propagation_distance_mm"] = round(setup["o_ccd_dist"], 0)
+		if setup.get("pos_p05_energy") is not None:
+			info["energy_keV"] = round(setup["pos_p05_energy"] / 1000, 3)
+		elif setup.get("pos_p07_energy") is not None:
+			info["energy_keV"] = round(setup["pos_p07_energy"] / 1000, 3)
+		elif setup.get("p05_energy") is not None:
+			info["energy_keV"] = round(setup["p05_energy"] / 1000, 3)
+		elif setup.get("p07_energy") is not None:
+			info["energy_keV"] = round(setup["p07_energy"] / 1000, 3)
 	else:
 		log.warning("The path 'entry/scan/setup' does not exist in %s." % info["h5"])
 	# Check for the camera data path
@@ -245,29 +263,48 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 		log.warning("Neither 'entry/hardware/camera' nor 'entry/hardware/camera1' exists in %s." % info["h5"])
 	# If a camera group was found, extract the data
 	if camera_group is not None:
-		for key in camera_group.keys():
-			# Assuming each entry is a dataset containing a single double value
-			camera[key] = read_scalar_h5(camera_group[key])
+		camera = read_group_scalars(camera_group)
 		if overrideMagnification is not None:
 			camera["magnification"] = overrideMagnification
+		elif "magnification" not in camera and "calibration" in camera_group:
+			calibration_group = camera_group["calibration"]
+			if "magnification" in calibration_group:
+				camera["magnification"] = read_scalar_h5(calibration_group["magnification"])
+		if "px_size" in camera:
+			camera["pixelsize"] = camera["px_size"]
+		if "pixel_size" in camera:
+			camera["pixelsize"] = camera["pixel_size"]
+		if "senzor_xsize" in camera:
+			camera["sensorsize_x"] = camera["senzor_xsize"]
+		if "senzor_ysize" in camera:
+			camera["sensorsize_y"] = camera["senzor_ysize"]
+		if "roi_xsize" in camera:
+			camera["roi_width"] = camera["roi_xsize"]
+		if "roi_ysize" in camera:
+			camera["roi_height"] = camera["roi_ysize"]
+		if "roi_width" not in camera and "sensorsize_x" in camera:
+			camera["roi_width"] = camera["sensorsize_x"]
+		if "roi_height" not in camera and "sensorsize_y" in camera:
+			camera["roi_height"] = camera["sensorsize_y"]
 		if "magnification" in camera and "pixelsize" in camera:
 			info["pix_size"] = camera["pixelsize"] / camera["magnification"]
-			if "sensorsize_x" in camera:
+			if "roi_width" in camera:
+				info["field_of_view_x"] = info["pix_size"] * camera["roi_width"]
+			elif "sensorsize_x" in camera:
 				info["field_of_view_x"] = info["pix_size"] * camera["sensorsize_x"]
-			if "sensorsize_y" in camera:
+			if "roi_height" in camera:
+				info["field_of_view_y"] = info["pix_size"] * camera["roi_height"]
+			elif "sensorsize_y" in camera:
 				info["field_of_view_y"] = info["pix_size"] * camera["sensorsize_y"]
+	# Compute fresnel number if propagation distance, energy, and pixel size are available
+	if "propagation_distance_mm" in info and "energy_keV" in info and "pix_size" in info and  info["energy_keV"] > 0 and info["propagation_distance_mm"] > 0 and info["pix_size"] > 0:
+		wavelength_m = 1.2398419843320026e-9 / info["energy_keV"]  # Convert keV to eV for wavelength calculation
+		propagation_distance_m = info["propagation_distance_mm"] / 1000.0  # Convert mm to m
+		pix_size_m = info["pix_size"] / 1000.0  # Convert mm to m
+		fresnel_number = (pix_size_m ** 2) / (wavelength_m * propagation_distance_m)
+		info["fresnel_number"] = fresnel_number
 	info["setup"] = setup
 	info["camera"] = camera
-	if "entry/scan/setup/pos_o_ccd_dist" in h5:
-		pos_o_ccd_dist = read_scalar_h5(h5['entry/scan/setup/pos_o_ccd_dist'])
-		info["propagation_distance_mm"] = round(pos_o_ccd_dist, 0)
-	energy_keV = None
-	if "entry/scan/setup/pos_p05_energy" in h5:
-		energy_keV = read_scalar_h5(h5['entry/scan/setup/pos_p05_energy']) / 1000
-	elif "entry/scan/setup/pos_p07_energy" in h5:
-		energy_keV = read_scalar_h5(h5['entry/scan/setup/pos_p07_energy']) / 1000
-	if energy_keV is not None:
-		info["energy_keV"] = round(energy_keV, 3)
 	return info
 
 
