@@ -29,73 +29,100 @@ log.addHandler(ch)
 log.propagate = False # Prevent log messages from being propagated to the root logger
 
 
-def findInsertionEvents(h5file, timeOffsetSec=None, zeroTime=None):
-	"""
-	Finds insertion events in a PETRA III HDF5 file.
+def findInsertionEvents(
+	h5file,
+	timeOffsetSec=None,
+	zeroTime=None,
+	*,
+	peakDistance=5,
+	minDurationSec=1.0,
+	maxDurationSec=10.0,
+	minCurrentIncrease=0.5,
+):
+	"""Find current insertion events from H5 metadata or a DataFrame.
 
-	Parameters:
-			h5file (str or h5py.File): Path to the HDF5 file or an open HDF5 file object.
-			timeOffsetSec (float, optional): Time offset in seconds to adjust timestamps from h5 file.
-			zeroTime (int, optional): If specified, then start_time, end_time and mid_time will be returned as second offset relative to this value.
+	DataFrame input must contain datetime 'time' and numeric 'current'
+	columns. Event indices refer to row positions in that DataFrame.
 
-	Returns:
-			List of insertion events with timestamps and values.
+	With zeroTime, event times are seconds relative to zeroTime.
+	Otherwise, event times are pandas timestamps.
 	"""
-	if timeOffsetSec is None:
-		timestampadjustment = np.int64(0)
+	offset = 0.0 if timeOffsetSec is None else float(timeOffsetSec)
+	if not np.isfinite(offset):
+		raise ValueError("timeOffsetSec must be finite.")
+	if peakDistance < 1:
+		raise ValueError("peakDistance must be at least 1.")
+	if not 0 <= minDurationSec < maxDurationSec:
+		raise ValueError("Invalid insertion duration bounds.")
+	if not np.isfinite(minCurrentIncrease) or minCurrentIncrease < 0:
+		raise ValueError("minCurrentIncrease must be finite and nonnegative.")
+	if isinstance(h5file, pd.DataFrame):
+		missing = {"time", "current"} - set(h5file.columns)
+		if missing:
+			raise ValueError(f"Current dataset is missing columns: {missing}")
+		data = h5file[["time", "current"]].copy()
+		# Do not modify the caller's DataFrame.
+		if pd.api.types.is_numeric_dtype(data["time"].dtype):
+			raise TypeError("DataFrame time values must be datetimes.")
+		data["time"] = pd.to_datetime(data["time"], utc=True, errors="raise")
+		data["time"] += pd.to_timedelta(offset, unit="s")
 	else:
-		timestampadjustment = np.int64(timeOffsetSec * 1000)
-	# Determine if h5file is a file path or already an h5py.File object
-	h5_opened_here = False
-	if isinstance(h5file, str):
-		h5 = h5py.File(h5file, 'r')
-		h5_opened_here = True
-	else:
-		h5 = h5file
-	# Get beam current data with provided time offset
-	beamCurrentData = beamCurrentDataset(h5, timeOffsetSec=timeOffsetSec)
-	if zeroTime is not None:
-		beamCurrentTimes = [(x - zeroTime).to_pytimedelta().total_seconds() for x in beamCurrentData["time"]]
-	else:
-		beamCurrentTimes = beamCurrentData["time"]
-	beamCurrentValues = beamCurrentData["current"].to_numpy()
-	# 1. Find local minima and maxima
-	min_indices, _ = find_peaks(-beamCurrentValues, distance=5)
-	max_indices, _ = find_peaks(beamCurrentValues, distance=5)
-	# 2. Pair each min with next max
-	insertion_events = []
+		# beamCurrentDataset owns/cleans up any file it opens.
+		source = os.fspath(h5file) if isinstance(h5file, os.PathLike) else h5file
+		data = beamCurrentDataset(source, timeOffsetSec=offset).copy()
+		data["time"] = pd.to_datetime( data["time"], utc=True, errors="raise")
+	data = data.reset_index(drop=True)
+	values = pd.to_numeric(
+		data["current"], errors="raise"
+	).to_numpy(dtype=np.float64)
+	if data["time"].isna().any() or not np.all(np.isfinite(values)):
+		raise ValueError("Current timestamps and values must be valid.")
+	if len(data) < 2:
+		return []
+	if not (data["time"].diff().iloc[1:] > pd.Timedelta(0)).all():
+		raise ValueError("Current timestamps must be strictly increasing.")
+	times = list(data["time"])
+	origin = (
+		None if zeroTime is None
+		else pd.to_datetime(zeroTime, utc=True, errors="raise")
+	)
+	if origin is not None and pd.isna(origin):
+		raise ValueError("zeroTime must be a valid datetime.")
+	min_indices, _ = find_peaks(-values, distance=peakDistance)
+	max_indices, _ = find_peaks(values, distance=peakDistance)
+	events = []
 	i = j = 0
 	while i < len(min_indices) and j < len(max_indices):
-		min_idx = min_indices[i]
-		max_idx = max_indices[j]
-		if max_idx > min_idx:
-			# 3. Validate monotonic increase between min and max
-			segment = beamCurrentValues[min_idx:max_idx + 1]
-			if np.all(np.diff(segment) >= 0):  # monotonic non-decreasing
-				# Optionally: filter by time or value thresholds
-				if zeroTime is not None:
-					dt = beamCurrentTimes[max_idx] - beamCurrentTimes[min_idx]
-				else:
-					dt = (beamCurrentTimes.iloc[max_idx] -
-						  beamCurrentTimes.iloc[min_idx]).to_pytimedelta().total_seconds()
-				dI = beamCurrentValues[max_idx] - beamCurrentValues[min_idx]
-				if 1.0 < dt < 10.0 and dI > 0.5:  # tune these as needed
-					insertion_events.append({
-						"start_index": min_idx,
-						"end_index": max_idx,
-						"start_time": beamCurrentTimes[min_idx],
-						"end_time": beamCurrentTimes[max_idx],
-						"mid_time": 0.5 * (beamCurrentTimes[min_idx] + beamCurrentTimes[max_idx]),
-						"current_increase": dI,
-						"duration_sec": dt
-					})
-			i += 1
-		else:
+		start = int(min_indices[i])
+		end = int(max_indices[j])
+		if end <= start:
 			j += 1
-	# Close the HDF5 file if it was opened here
-	if h5_opened_here:
-		h5.close()
-	return insertion_events
+			continue
+		duration = (times[end] - times[start]).total_seconds()
+		increase = float(values[end] - values[start])
+		segment = values[start:end + 1]
+		if (
+			np.all(np.diff(segment) >= 0)
+			and minDurationSec < duration < maxDurationSec
+			and increase > minCurrentIncrease
+		):
+			if origin is None:
+				start_time = times[start]
+				end_time = times[end]
+			else:
+				start_time = (times[start] - origin).total_seconds()
+				end_time = (times[end] - origin).total_seconds()
+			events.append({
+				"start_index": start,
+				"end_index": end,
+				"start_time": start_time,
+				"end_time": end_time,
+				"mid_time": start_time + (end_time - start_time) / 2,
+				"current_increase": increase,
+				"duration_sec": duration,
+			})
+		i += 1
+	return events
 
 
 # This function extracts beam current readings from PETRA III scan HDF5 files.
@@ -300,7 +327,7 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 	if "propagation_distance_mm" in info and "energy_keV" in info and "pix_size" in info and  info["energy_keV"] > 0 and info["propagation_distance_mm"] > 0 and info["pix_size"] > 0:
 		wavelength_m = 1.2398419843320026e-9 / info["energy_keV"]  # Convert keV to eV for wavelength calculation
 		propagation_distance_m = info["propagation_distance_mm"] / 1000.0  # Convert mm to m
-		pix_size_m = info["pix_size"] / 1000.0  # Convert mm to m
+		pix_size_m = info["pix_size"] / 1000.0	# Convert mm to m
 		fresnel_number = (pix_size_m ** 2) / (wavelength_m * propagation_distance_m)
 		info["fresnel_number"] = fresnel_number
 	info["setup"] = setup
@@ -500,4 +527,161 @@ def imageDataset(h5file, image_key=0, includeCurrent=True, includePixelShift=Fal
 		# print("p0 =%f min=%f max=%f zeropos=%f pix_size=%f"%(df["s_stage_x"].iloc[0], df["s_stage_x"].min(), df["s_stage_x"].max(), zeropos, pix_size))
 		pixShifts = (df["s_stage_x"] - zeropos) / pix_size
 		df = df.assign(pixel_shift=pixShifts)
+	return df
+
+def scanDatasetNanotomography(logfile, folder, includeCurrent=False):
+	"""
+	Build a scan DataFrame from LogScan.log and a directory of TIFF files.
+
+	Files must follow:
+		img_<batch>_<frame>.tif[f]
+		ref_<batch>_<frame>.tif[f]
+
+	Within each identifier, files are sorted numerically by (batch, frame)
+	and paired with log rows in their original order. Log image numbers
+	are preserved as metadata but are not used to construct filenames.
+
+	Only log rows whose infostr is 'start' are used.
+
+	Returns:
+		DataFrame with an increasing UNIX-millisecond index and columns:
+		time, image_key, image_file, s_rot, time_sec,
+		image_identifier, infostr, image_number_i, image_number_ii,
+		current_number, and optionally current.
+
+	image_key:
+		img -> 0 (projection)
+		ref -> 1 (reference/flat field)
+
+	No timeOffsetSec is needed: beam current is recorded in each log row.
+	"""
+	import io
+	import re
+	from decimal import Decimal
+
+	folder = os.path.abspath(os.fspath(folder))
+	logfile = os.path.abspath(os.fspath(logfile))
+	if not os.path.isdir(folder):
+		raise NotADirectoryError(folder)
+
+	start_time = None
+	rows = []
+	with open(logfile, "r", encoding="utf-8") as stream:
+		for line_number, line in enumerate(stream, 1):
+			line = line.strip()
+			if not line:
+				continue
+			if line.startswith("#"):
+				match = re.fullmatch(
+					r"#\s*starttime\s*=\s*(\S+)", line
+				)
+				if match:
+					if start_time is not None:
+						raise ValueError("Multiple #starttime headers.")
+					start_time = Decimal(match.group(1))
+				continue
+			if len(line.split()) != 8:
+				raise ValueError(
+					f"{logfile}:{line_number}: expected 8 columns."
+				)
+			rows.append(line)
+
+	if start_time is None or not start_time.is_finite():
+		raise ValueError(f"Missing or invalid #starttime in {logfile}.")
+	if not rows:
+		raise ValueError(f"No data rows in {logfile}.")
+
+	columns = [
+		"image_identifier", "infostr",
+		"image_number_i", "image_number_ii", "current_number",
+		"time_sec", "current", "s_rot",
+	]
+	df = pd.read_csv(
+		io.StringIO("\n".join(rows)),
+		sep=r"\s+",
+		names=columns,
+		dtype=str,
+	)
+	df = df.loc[df["infostr"] == "start"].copy().reset_index(drop=True)
+	if df.empty:
+		raise ValueError(f"No 'start' rows in {logfile}.")
+
+	key_map = {"img": 0, "ref": 1}
+	unknown = set(df["image_identifier"]) - set(key_map)
+	if unknown:
+		raise ValueError(f"Unsupported image identifiers: {sorted(unknown)}.")
+
+	# Convert epoch seconds + relative seconds directly to milliseconds.
+	# Decimal avoids first rounding the epoch through a Python float.
+	relative_times = [Decimal(value) for value in df["time_sec"]]
+	if any(not value.is_finite() for value in relative_times):
+		raise ValueError("Log timestamps must be finite.")
+	timestamps = np.asarray(
+		[int((start_time + value) * 1000) for value in relative_times],
+		dtype=np.int64,
+	)
+
+	for column in ("image_number_i", "image_number_ii", "current_number"):
+		df[column] = pd.to_numeric(df[column], errors="raise")
+		if not np.isfinite(df[column].to_numpy()).all():
+			raise ValueError(f"Non-finite values in {column}.")
+		if not (df[column] == np.floor(df[column])).all():
+			raise ValueError(f"Non-integer values in {column}.")
+		df[column] = df[column].astype(np.int64)
+
+	for column in ("time_sec", "current", "s_rot"):
+		df[column] = pd.to_numeric(df[column], errors="raise")
+		if not np.isfinite(df[column].to_numpy()).all():
+			raise ValueError(f"Non-finite values in {column}.")
+
+	pattern = re.compile(
+		r"^(img|ref)_(\d+)_(\d+)\.tiff?$", re.IGNORECASE
+	)
+	files = {"img": [], "ref": []}
+	with os.scandir(folder) as entries:
+		for entry in entries:
+			match = pattern.fullmatch(entry.name)
+			if match and entry.is_file():
+				identifier = match.group(1).lower()
+				order = (int(match.group(2)), int(match.group(3)))
+				files[identifier].append((order, entry.path))
+
+	df["image_file"] = ""
+	for identifier, candidates in files.items():
+		candidates.sort(key=lambda item: item[0])
+		orders = [order for order, _ in candidates]
+		if len(set(orders)) != len(orders):
+			raise ValueError(
+				f"Ambiguous filenames: duplicate numeric {identifier} "
+				f"(batch, frame) identifiers in {folder}."
+			)
+
+		mask = df["image_identifier"] == identifier
+		expected = int(mask.sum())
+		if len(candidates) != expected:
+			raise ValueError(
+				f"{identifier}: {expected} log rows but "
+				f"{len(candidates)} matching TIFF files in {folder}. "
+				"Cannot safely pair files by acquisition order."
+			)
+		if expected:
+			df.loc[mask, "image_file"] = [
+				path for _, path in candidates
+			]
+
+	df["image_key"] = df["image_identifier"].map(key_map).astype(np.int64)
+
+	# Follow scanDataset's convention for duplicate/non-increasing times.
+	# time_sec retains the original relative timestamps.
+	if np.any(np.diff(timestamps) <= 0):
+		log.warning(
+			"Non-increasing timestamps in %s; normalizing timestamps.",
+			logfile,
+		)
+		timestamps = normalize_timestamps_preserve_increase(timestamps)
+
+	df.index = timestamps
+	df["time"] = pd.to_datetime(timestamps, unit="ms")
+	if not includeCurrent:
+		df.drop(columns=["current"], inplace=True)
 	return df
