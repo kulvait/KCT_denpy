@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Processing of h5 format used to output Petra III data
@@ -167,10 +167,16 @@ def beamCurrentDataset(h5file, timeOffsetSec=None):
 		df.sort_index(inplace=True)
 		# Apply a time offset to the index (timestamp) to synchronize with external data
 		if timestampadjustment != 0:
+			# Apply the offset using signed arithmetic, independently of pandas/NumPy mixed signed/unsigned behavior.
+			timestamps = df.index.to_numpy(dtype=np.int64)
+			adjusted = timestamps + timestampadjustment
+			# Check if uint64 Unix-millisecond index can be preserved
+			if np.any(adjusted < 0):
+				raise ValueError(f"Time offset {timeOffsetSec}s seconds results in negative timestamps. Invalid uint64 index.")
 			# Adjustment in milliseconds
-			df.index = (df.index + timestampadjustment).astype(np.uint64)
+			df.index = pd.Index(adjusted.astype(np.uint64), name=df.index.name)
 			# Update the time column to reflect the adjusted timestamps
-			df.time = pd.to_datetime(df.index, unit="ms")
+			df["time"] = pd.to_datetime(df.index, unit="ms")
 		# Close the HDF5 file if it was opened here
 		return df
 	finally:
