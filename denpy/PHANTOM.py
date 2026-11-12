@@ -252,14 +252,14 @@ def constructPhantom3D(e3d, n=512):
 		# Here Matthias Schabel evidently has choosen so called Z1X2Z3 matrix as defined https://en.wikipedia.org/wiki/Euler_angles#Rotation_matrix
 		# Implicit equation for ellipsoid is evaluated in rotated coordinates
 		alpha = np.array([[c3 * c1 - c2 * s1 * s3, c3 * s1 + c2 * c1 * s3, s3 * s2],
-		                  [-s3 * c1 - c2 * s1 * c3, -s3 * s1 + c2 * c1 * c3, c3 * s2], [s2 * s1, -s2 * c1, c2]])
+						  [-s3 * c1 - c2 * s1 * c3, -s3 * s1 + c2 * c1 * c3, c3 * s2], [s2 * s1, -s2 * c1, c2]])
 		# rotated ellipsoid coordinates
 		coordp = np.matmul(alpha, coord)
 		ellipsoidCenter = np.array([[e.x0], [e.y0], [e.z0]])
 		ellipsoidSquareHalfaxes = np.array(np.square([[e.a], [e.b], [e.c]]))
 		ellipsoidImplicitResult = np.sum(np.divide(np.square(np.subtract(coordp, ellipsoidCenter)),
-		                                           ellipsoidSquareHalfaxes),
-		                                 axis=0)  # Sum along columns
+												   ellipsoidSquareHalfaxes),
+										 axis=0)  # Sum along columns
 		p[ellipsoidImplicitResult <= 1.0] += e.A
 		"""
 		idx = np.nonzero((coordp[0, :] - x0) ** 2.0 / asq +
@@ -331,6 +331,28 @@ see : http://www.gnu.org/copyleft/gpl.html
 		raise TypeError('phantom type "%s" not recognized' % phantom)
 	return constructPhantom3D(e3d, n)
 
+def phantom2d(phantom='SheppLogan2D', n=512):
+	"""Generate a 2D phantom as a float64 array of shape (n, n)."""
+	if n < 1:
+		raise ValueError('n must be positive')
+	definitions = {
+		'SheppLogan2D': SheppLogan2D,
+		'Octave2D': Octave2D,
+		'Toft2D': Toft2D,
+	}
+	if phantom not in definitions:
+		raise TypeError('phantom type "%s" not recognized' % phantom)
+	axis = np.linspace(-1, 1, n)
+	x, y = np.meshgrid(axis, -axis)
+	image = np.zeros((n, n), dtype=np.float64)
+	for e in definitions[phantom]():
+		angle = np.deg2rad(e.phi)
+		dx, dy = x - e.x0, y - e.y0
+		xr = dx * np.cos(angle) + dy * np.sin(angle)
+		yr = -dx * np.sin(angle) + dy * np.cos(angle)
+		image[(xr / e.a)**2 + (yr / e.b)**2 <= 1] += e.A
+	return image
+
 
 def printEllipses(e2d, delimiter="\t"):
 	print("A%sa%sb%sx0%sy0%sphi\n" % (delimiter, delimiter, delimiter, delimiter, delimiter),)
@@ -340,8 +362,8 @@ def printEllipses(e2d, delimiter="\t"):
 
 def printEllipsoids(e3d, delimiter="\t"):
 	print(
-	    "A%sa%sb%sc%sx0%sy0%sz0%sphi%stheta%spsi\n" %
-	    (delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter),)
+		"A%sa%sb%sc%sx0%sy0%sz0%sphi%stheta%spsi\n" %
+		(delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter, delimiter),)
 	for ellipsoid in e3d:
 		print(delimiter.join("% 9.5f" % i for i in ellipsoid))
 
@@ -544,18 +566,18 @@ def ToftSchabelKulvait3D():
 
 def Chessboard3D(n=512, block_count=8, i=None, j=None, k=None):
 	"""
-    Create a 3D chessboard phantom, with an option to isolate a single hypervoxel.
+	Create a 3D chessboard phantom, with an option to isolate a single hypervoxel.
 
-    Parameters:
-    - n: int, size of the grid (n x n x n).
-    - block_count: int, number of blocks along each dimension.
-    - i: int or None, optional block index in the x-direction to fill (if specified).
-    - j: int or None, optional block index in the y-direction to fill (if specified).
-    - k: int or None, optional block index in the z-direction to fill (if specified).
+	Parameters:
+	- n: int, size of the grid (n x n x n).
+	- block_count: int, number of blocks along each dimension.
+	- i: int or None, optional block index in the x-direction to fill (if specified).
+	- j: int or None, optional block index in the y-direction to fill (if specified).
+	- k: int or None, optional block index in the z-direction to fill (if specified).
 
-    Returns:
-    - grid: 3D numpy array of size (n, n, n) with the chessboard pattern or isolated block(s).
-    """
+	Returns:
+	- grid: 3D numpy array of size (n, n, n) with the chessboard pattern or isolated block(s).
+	"""
 	# Calculate the block size
 	block_size = (n + block_count - 1) // block_count
 	grid = np.zeros((n, n, n), dtype=np.float32)
@@ -586,5 +608,5 @@ def construct2DGaussianDecay(centerx=256, centery=256, sigmax=5, sigmay=5, sizex
 	for i in range(sizex):
 		for j in range(sizey):
 			x[j, i] = factor * np.exp(
-			    (-float(i - centerx)**2 / twosigmaxsquared - float(j - centery)**2 / twosigmaysquared))
+				(-float(i - centerx)**2 / twosigmaxsquared - float(j - centery)**2 / twosigmaysquared))
 	return np.tile(x, (sizez, 1, 1))
