@@ -32,6 +32,49 @@ log.propagate = False  # Prevent log messages from being propagated to the root 
 #array2d.shape = (dimy, dimx) = (axis0, axis1)
 #array3d.shape=(dimz, dimy, dimx)= (axis0, axis1, axis2)
 
+def register_codecs():
+	"""Register the imagecodecs codecs (jpeg2k, htj2k, jpegxl, jpegxr, avif, zfp, sz3, ...) with zarr v3
+	and numcodecs (zarr v2). Writing registers them through get_compressor; a reader must call this
+	before opening an array written with them, else zarr reports e.g. "Unknown codec: 'imagecodecs_jpeg2k'"."""
+	from imagecodecs.zarr import register_codecs as register_zarr3
+	from imagecodecs.numcodecs import register_codecs as register_numcodecs
+	register_zarr3()
+	register_numcodecs()
+
+
+# get_compressor imports imagecodecs' own register_codecs locally in some branches, so it uses this name
+_register_image_codecs = register_codecs
+
+
+def _check_blosc(cname):
+	"""RuntimeError if the Blosc library was built without the compressor cname (e.g. snappy)."""
+	from numcodecs import blosc
+	if cname not in blosc.list_compressors():
+		raise RuntimeError(f"Blosc compressor '{cname}' is not available in this Blosc build "
+						   f"(available: {', '.join(blosc.list_compressors())}).")
+
+
+def codec_arguments(codec):
+	"""Keyword arguments for zarr-python 3 create_array from the result of get_compressor.
+
+	zarr v2 (a numcodecs codec or None): {"compressors": codec}.
+	zarr v3 (a list): an array-to-bytes codec, i.e. the image codecs (jpeg2k, htj2k, jpegxl, jpegxr,
+	avif, zfp, sz3), must be the serializer of the array; the other (bytes-to-bytes) codecs are its
+	compressors. Example: array = group.create_array("a", shape=..., dtype=..., **codec_arguments(codec))
+	"""
+	if codec is None or not isinstance(codec, (list, tuple)):
+		return {"compressors": codec}
+	from zarr.abc.codec import ArrayBytesCodec
+	serializers = [c for c in codec if isinstance(c, ArrayBytesCodec)]
+	compressors = [c for c in codec if not isinstance(c, ArrayBytesCodec)]
+	if len(serializers) > 1:
+		raise ValueError(f"More than one array-to-bytes codec in {codec}")
+	arguments = {"compressors": compressors if compressors else None}
+	if serializers:
+		arguments["serializer"] = serializers[0]
+	return arguments
+
+
 def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 	"""
 	Return a zarr-compatible compressor/codec based on name and Zarr format version.
@@ -43,7 +86,8 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 	clevel : int
 		Compression level (meaning depends on the codec; Zstd/Blosc: 0..9 typical).
 	zarrv2 : bool
-		If False, return a Zarr v3 codec *pipeline* (list) suitable for `codecs=...`.
+		If False, return a Zarr v3 codec *pipeline* (list); pass it to create_array with
+		codec_arguments(), which makes an image codec the serializer.
 		If True, return a single compressor object (e.g., for Zarr v2 `compressor=`).
 		Default is False (Zarr v3).
 	dtype : Optional[Union[np.dtype, type, str]]
@@ -54,19 +98,16 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 	    Additional keyword arguments to pass to the codec constructor.
         For example, ``bitspersample=12`` for codecs that support it.
 	"""
-	# Derive typesize from outtype if provided
+	# Element size in bytes, the Blosc typesize (shuffle works on elements of this size)
 	itemsize = 1  # Default typesize for codecs that require it (e.g., Blosc)
 	if dtype is not None:
-		if isinstance(dtype, np.dtype):
-			typesize = dtype.itemsize
-		else:
-			try:
-				typesize = np.dtype(dtype).itemsize
-			except TypeError:
-				log.warning(f"Invalid dtype provided: {dtype}. Defaulting to typesize=1.")
+		try:
+			itemsize = np.dtype(dtype).itemsize
+		except TypeError:
+			log.warning(f"Invalid dtype provided: {dtype}. Defaulting to typesize=1.")
 	if zarrv2:
 		# ---- Zarr v2 codec  ----
-		from numcodecs import Blosc, GZip as NcGZip
+		from numcodecs import Blosc, GZip
 		# Old style compressors (zarr v2 compatible)
 		if name == 'none':
 			return None
@@ -79,15 +120,18 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 		elif name == 'blosc' or name == 'blosc-blosclz':
 			return Blosc(cname='blosclz', clevel=clevel, shuffle=Blosc.BITSHUFFLE, typesize=itemsize)
 		elif name == "avif":
+			_register_image_codecs()
 			#clevel -1 AVIF_QUALITY_DEFAULT, 100 = AVIF_QUALITY_BEST = AVIF_QUALITY_LOSSLESS, 0 = AVIF_QUALITY_WORST
 			from imagecodecs.numcodecs import Avif, register_codecs
 			register_codecs()
 			return Avif(level=clevel, **codec_kwargs)
 		elif name == "jpegxr":
+			_register_image_codecs()
 			from imagecodecs.numcodecs import Jpegxr, register_codecs
 			register_codecs()
 			return Jpegxr(level=clevel, **codec_kwargs)
 		elif name == "jpegxl":
+			_register_image_codecs()
 			from imagecodecs.numcodecs import Jpegxl, register_codecs
 			register_codecs()
 			if clevel == 0:
@@ -100,6 +144,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				jpegxl_codec = Jpegxl(lossless=False, distance=distance, effort=7, **codec_kwargs)
 			return jpegxl_codec
 		elif name == "jpeg2k":
+			_register_image_codecs()
 			from imagecodecs.numcodecs import register_codecs, get_codec, Jpeg2k
 			register_codecs()  # Ensure the codec is registered
 			if clevel == 0:
@@ -108,14 +153,16 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				jp2_codec = get_codec({"id": Jpeg2k.codec_id, "reversible": False, "level": clevel, **codec_kwargs})
 			return jp2_codec
 		elif name == "htj2k":
+			_register_image_codecs()
 			from imagecodecs.numcodecs import register_codecs, get_codec, Htj2k
 			register_codecs()  # Ensure the codec is registered
 			if clevel == 0:
-				htj2k_codec = get_codec({"id": Htj2k.codec_id, "reversible": True, "level": clevel, **codec_kwargs})
+				htj2k_codec = get_codec({"id": Htj2k.codec_id, "reversible": True, **codec_kwargs})
 			else:
-				htj2k_codec = get_codec({"id": Htj2k.codec_id, "reversible": False, **codec_kwargs})
+				htj2k_codec = get_codec({"id": Htj2k.codec_id, "reversible": False, "level": clevel, **codec_kwargs})
 			return htj2k_codec
 		elif name == "sz3":
+			_register_image_codecs()
 			import imagecodecs
 			if not imagecodecs.SZ3.available:
 				raise RuntimeError("SZ3 codec is not available in the current Python imagecodecs package.")
@@ -123,6 +170,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 			register_codecs()  # Ensure the codec is registered
 			return get_codec({"id": Sz3.codec_id, "mode": "abs", "abs": clevel})  # Use clevel as absolute error for lossy compression
 		elif name == "zfp":
+			_register_image_codecs()
 			import imagecodecs
 			if not imagecodecs.ZFP.available:
 				raise RuntimeError("ZFP codec is not available in the current Python imagecodecs package.")
@@ -149,21 +197,30 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 		if name == 'none':
 			print("No compression selected for Zarr v3, returning empty codec chain.")
 		elif name == "lz4":
-			codecs_chain.append(codecs.LZ4Codec(level=clevel))
+			# zarr has no native LZ4 codec; use numcodecs' LZ4 through zarr's wrapper (zarr >= 3.1.3).
+			# LZ4 has no compression level (only an acceleration), so clevel is not used.
+			try:
+				from zarr.codecs.numcodecs import LZ4
+			except ImportError:
+				from numcodecs.zarr3 import LZ4
+			codecs_chain.append(LZ4())
 		elif name == "gzip":
 			codecs_chain.append(codecs.GzipCodec(level=clevel))
 		elif name == "avif":
+			_register_image_codecs()
 			from imagecodecs.zarr import Avif, register_codecs
 			register_codecs()
 			# clevel -1 AVIF_QUALITY_DEFAULT, 100 = AVIF_QUALITY_BEST = AVIF_QUALITY_LOSSLESS, 0 = AVIF_QUALITY_WORST
 			# Note current implementation for momochrome always force AVIF_QUALITY_LOSSLESS, so clevel is ignored for monochrome images
 			codecs_chain.append(Avif(level=clevel, **codec_kwargs))
 		elif name == "jpegxr":
+			_register_image_codecs()
 			from imagecodecs.zarr import Jpegxr, register_codecs
 			register_codecs()
 			Jpegxr_codec = Jpegxr(level=clevel, **codec_kwargs)
 			codecs_chain.append(Jpegxr_codec)
 		elif name == "jpegxl":
+			_register_image_codecs()
 			from imagecodecs.zarr import Jpegxl
 			# JPEG XL offers both lossless and lossy compression
 			#  # -inf-100: quality; > 100: lossless
@@ -174,6 +231,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				jpegxl_codec = Jpegxl(lossless=False, distance=distance, effort=7, **codec_kwargs)
 			codecs_chain.append(jpegxl_codec)
 		elif name == "jpeg2k":
+			_register_image_codecs()
 			from imagecodecs.zarr import Jpeg2k
 			#"Zarr v3: Using JPEG 2000 codec with clevel={clevel}. Note: For lossless compression, use clevel=0."
 			# quality, psnr, level < 1 or > 1000 map to quality=0
@@ -184,6 +242,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 			codecs_chain.append(jp2_codec)
 			# Try level 5, for lossy implementation, use reversible=False
 		elif name == "htj2k":
+			_register_image_codecs()
 			from imagecodecs.zarr import Htj2k
 			# Note that level maps to qstep [0.0-1.0) or qfactor [1-100] ... qfactor 99 too low quatlity, so use qstep=clevel=(0,0.5) for lossy compression lower is better quality, 0.0=lossless, 0.5=highly lossy
 			if clevel == 0:
@@ -192,6 +251,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				htj2k_codec = Htj2k(reversible=False, level=clevel, **codec_kwargs)
 			codecs_chain.append(htj2k_codec)
 		elif name == "sz3":
+			_register_image_codecs()
 			import imagecodecs
 			if not imagecodecs.SZ3.available:
 				raise RuntimeError("SZ3 codec is not available in the current Python imagecodecs package.")
@@ -199,6 +259,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 			sz3_codec = Sz3(mode="abs", abs=clevel)
 			codecs_chain.append(sz3_codec)
 		elif name == "zfp":
+			_register_image_codecs()
 			import imagecodecs
 			if not imagecodecs.ZFP.available:
 				raise RuntimeError("ZFP codec is not available in the current Python imagecodecs package.")
@@ -210,6 +271,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				zfp_codec = Zfp(mode=imagecodecs.ZFP.MODE.FIXED_PRECISION, level=clevel, numthreads=os.cpu_count())
 			codecs_chain.append(zfp_codec)
 		elif name == "blosc" or name == "blosc-blosclz":
+			_check_blosc("blosclz")
 			codecs_chain.append(
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.blosclz,
@@ -219,6 +281,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				)
 			)
 		elif name == "blosc-lz4":
+			_check_blosc("lz4")
 			codecs_chain.append(
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.lz4,
@@ -228,6 +291,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				)
 			)
 		elif name == "blosc-lz4hc":
+			_check_blosc("lz4hc")
 			codecs_chain.append(
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.lz4hc,
@@ -237,6 +301,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				)
 			)
 		elif name == "blosc-snappy":
+			_check_blosc("snappy")
 			codecs_chain.append(
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.snappy,
@@ -246,6 +311,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				)
 			)
 		elif name == "blosc-zlib":
+			_check_blosc("zlib")
 			codecs_chain.append(
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.zlib,
@@ -255,6 +321,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				)
 			)
 		elif name == "blosc-zstd" or name=="zstd":
+			_check_blosc("zstd")
 			codecs_chain.append(
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.zstd,
