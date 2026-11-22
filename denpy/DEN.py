@@ -18,8 +18,45 @@ import os
 #array3d.shape=(dimz, dimy, dimx)= (axis0, axis1, axis2)
 
 
+def frameIndex(info, k):
+	"""Flat index of frame k of a DEN file described by info = readHeader(fileName).
+
+	k is either
+	- an integer: the frame number counted over all dimensions after Y, X, i.e. the order of the frames
+	  in the file (for numpy shape (..., z2, z1, y, x) the C-order flat index over shape[:-2]), valid
+	  for any file with 3 or more dimensions (and k = 0 for a 2D file), or
+	- for files with more than 3 dimensions, a list/tuple of indices in DEN dimspec order
+	  (dimspec[2], dimspec[3], ...; the first index changes fastest), i.e. numpy shape[:-2] reversed.
+	Raises TypeError or IndexError for an invalid index.
+	"""
+	frameDims = list(info["dimspec"][2:])  # dimensions after X, Y in DEN order
+	frameCount = int(np.prod(frameDims)) if len(frameDims) > 0 else 1
+	if isinstance(k, (list, tuple)):
+		if info["dimcount"] <= 3:
+			raise TypeError("Index list %s given for a %dD file, use an integer frame index!" % (k, info["dimcount"]))
+		if len(k) != len(frameDims):
+			raise TypeError("Index must be a list of dimension %d, got %s!" % (len(frameDims), k))
+		zindex = 0
+		blockIncrement = 1
+		for i, ki in enumerate(k):
+			if not isinstance(ki, (int, np.integer)) or isinstance(ki, bool):
+				raise TypeError("Index %s contains a non integer %s!" % (k, ki))
+			if not 0 <= int(ki) < frameDims[i]:
+				raise IndexError("Index %s out of range for frame dimensions (dimspec order) %s!" % (k, frameDims))
+			zindex += int(ki) * blockIncrement
+			blockIncrement *= frameDims[i]
+		return zindex
+	if not isinstance(k, (int, np.integer)) or isinstance(k, bool):
+		raise TypeError("Index k must be an integer or, for more than 3 dimensions, a list, got %s of type %s!" % (k, type(k)))
+	k = int(k)
+	if not 0 <= k < frameCount:
+		raise IndexError("Frame index %d out of range, the file has %d frames!" % (k, frameCount))
+	return k
+
+
 # Get frame from DEN file
-# i is the frame index
+# k is the frame index, see frameIndex: an integer counted over all dimensions after Y, X,
+# or for more than 3 dimensions a list of indices in DEN dimspec order
 # Can get a subframe, where row_from is the first row index
 # row_to is not included
 # col_from is the first col index
@@ -31,11 +68,6 @@ def getFrame(fileName,
 			 col_from=None,
 			 col_to=None,
 			 dtype=None):
-	if not isinstance(k, (int, np.integer)) or isinstance(k, bool):
-		raise TypeError("Index k must be an integer, got %s of type %s!" % (k, type(k)))
-	k = int(k)  # Convert to standard Python integer type
-	if k < 0:
-		raise ValueError("Index k must be non-negative, got %d!" % k)
 	info = readHeader(fileName)
 	if info["dimcount"] < 2:
 		raise TypeError("File %s has dimension %d, expected >= 2. Call getNumpyArray instead!" %
@@ -50,28 +82,10 @@ def getFrame(fileName,
 		col_from = 0
 	if col_to is None:
 		col_to = columns
+	zindex = frameIndex(info, k)
 	if info["dimcount"] == 2:
-		if k == 0:
-			data = getNumpyArray(fileName)
-			return data[row_from:row_to, col_from:col_to]
-		else:
-			raise TypeError("File is 2D but k is not 0!")
-	#For more than 3D arrays
-	if info["dimcount"] > 3:
-		if not isinstance(k, (list, tuple)):
-			raise TypeError("Index k must be a list of dimension %d!" %
-							(info["dimcount"] - 2))
-		if len(k) != info["dimcount"] - 2:
-			raise TypeError("Index must be a list of dimension %d!" %
-							(info["dimcount"] - 2))
-		dim = info["dimspec"][2:]
-		blockIncrement = 1
-		zindex = 0
-		for i in range(len(k)):
-			zindex = zindex + k[i] * blockIncrement
-			blockIncrement = blockIncrement * dim[i]
-	else:
-		zindex = k
+		data = getNumpyArray(fileName)
+		return data[row_from:row_to, col_from:col_to]
 	with open(fileName, "rb") as f:
 		offset = info["offset"] + rows * columns * info["elementbytesize"] * zindex
 		f.seek(offset, os.SEEK_SET)
@@ -103,12 +117,7 @@ def writeFrame(fileName, k, data, force=False):
 		raise ValueError(
 			'When processing %s there is dimension mismatch between file (dimy, dimx)=(%d, %d) and frame to be stored shape=(dimy, dimx)=(%d, %d).'
 			% (fileName, dimy, dimx, shape[0], shape[1]))
-	#For more than 3D arrays
-	if info["dimcount"] > 3:
-		if len(k) != info["dimcount"] - 2:
-			raise TypeError("Index must be a list of dimension %d!" %
-							(info["dimcount"] - 2))
-		k = np.prod(k)
+	k = frameIndex(info, k)  # integer frame number or, for more than 3D, a list in dimspec order
 	f = open(fileName, "r+b")
 	if info["type"] != data.dtype:
 		raise TypeError(

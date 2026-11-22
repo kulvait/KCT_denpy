@@ -521,7 +521,7 @@ def imageDataset(h5file, image_key=0, includeCurrent=True, includePixelShift=Fal
 		elif "/entry/hardware/camera" in h5:
 			cam = "camera"
 		else:
-			raise ValueError("There is no entry/hardware/camera or entry/hardware/camera1 entry in %s." % info["h5"])
+			raise ValueError("There is no entry/hardware/camera or entry/hardware/camera1 entry in %s." % h5file)
 		pix_size_cam = float(h5["entry/hardware/%s/pixelsize" % cam][0])
 		if overrideMagnification is not None:
 			pix_size_mag = overrideMagnification
