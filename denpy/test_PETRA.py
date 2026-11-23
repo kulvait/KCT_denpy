@@ -89,6 +89,92 @@ def replace(h5, path, data, dtype=None):
 	h5.create_dataset(path, data=data, dtype=dtype)
 
 
+class TestTimestamps(unittest.TestCase):
+	"""fix_timestamps: frames keep their order, only frames with a wrong time are re-timed; known issues
+	are recognised (and fixed with fixKnownTimestampIssues), others get the default correction."""
+
+	# the block pattern of P05/P07 files: the flats after the darks and after the projections carry the
+	# start time of the block before them
+	DAR, REF, IMG, REF2 = np.arange(0, 500, 100), np.arange(0, 300, 100), np.arange(2000, 3000, 100), np.arange(2000, 2300, 100)
+	KEYS = np.array([2] * 5 + [1] * 3 + [0] * 10 + [1] * 3)
+
+	def blocks(self):
+		return np.concatenate([self.DAR, self.REF, self.IMG, self.REF2])
+
+	def test_flat_field_blocks(self):
+		new, issues = PETRA.fix_timestamps(self.blocks(), self.KEYS)
+		np.testing.assert_array_equal(new[:5], self.DAR)                        # unchanged
+		np.testing.assert_array_equal(new[5:8], [1100, 1200, 1300])            # centred: 700 ms before and after
+		np.testing.assert_array_equal(new[8:18], self.IMG)                     # unchanged: the times fit again
+		np.testing.assert_array_equal(new[18:], [3600, 3700, 3800])            # the pause before the projections
+		self.assertEqual([(k, r) for k, r, _ in issues], [("flat_blocks", (5, 7)), ("flat_blocks", (18, 20))])
+		messages = PETRA.timestamp_issue_messages(issues)
+		self.assertEqual(len(messages), 1)
+		self.assertTrue(messages[0].startswith(PETRA.TIMESTAMP_FLAT_BLOCKS))
+		self.assertIn("rows 5-7 +1100 ms, rows 18-20 +1600 ms; fixed", messages[0])
+		# without the fix: reported, default correction (1 ms behind the frame before, steps kept)
+		new, issues = PETRA.fix_timestamps(self.blocks(), self.KEYS, fixKnownTimestampIssues=False)
+		np.testing.assert_array_equal(new[5:8], [401, 501, 601])
+		np.testing.assert_array_equal(new[18:], [2901, 3001, 3101])
+		self.assertIn("default correction (fixKnownTimestampIssues=False)", PETRA.timestamp_issue_messages(issues, False)[0])
+		# without image keys the structure is unknown: default correction
+		new, issues = PETRA.fix_timestamps(self.blocks())
+		np.testing.assert_array_equal(new[5:8], [401, 501, 601])
+		self.assertEqual({k for k, _, _ in issues}, {"unknown"})
+		self.assertTrue(PETRA.timestamp_issue_messages(issues)[0].startswith(PETRA.TIMESTAMP_UNKNOWN))
+
+	def test_frame_with_the_time_of_an_earlier_frame(self):
+		# a projection with the time of the frame 20 rows earlier, its neighbours on time
+		old = np.arange(0, 4000, 100)
+		old[30] = old[10]
+		new, issues = PETRA.fix_timestamps(old, np.zeros(40))
+		np.testing.assert_array_equal(new, np.arange(0, 4000, 100))          # back on the line
+		self.assertEqual(issues, [("repeated 20", (30, 30), "row 30 +2000 ms (time of row 10)")])
+		self.assertEqual(PETRA.timestamp_issue_messages(issues),
+						 [PETRA.TIMESTAMP_REPEATED % 20 + ": row 30 +2000 ms (time of row 10); fixed"])
+		new, _ = PETRA.fix_timestamps(old, fixKnownTimestampIssues=False)
+		self.assertEqual(new[30], 2901)                                         # default: 1 ms behind
+		# a repeated neighbour is the same issue with offset 1
+		new, issues = PETRA.fix_timestamps([0, 100, 100, 200, 300])
+		np.testing.assert_array_equal(new, [0, 100, 150, 200, 300])
+		self.assertEqual(issues[0][0], "repeated 1")
+
+	def test_unknown(self):
+		for old, expected in (([0, 100, 100, 100, 101, 500], [0, 100, 101, 102, 103, 500]),   # several frames
+							  ([0, 100, 200, 50], [0, 100, 200, 201]),                        # the last frame
+							  ([0, 100, 200, 150, 160, 400], [0, 100, 200, 201, 211, 400])):     # a drop of two
+			with self.subTest(old=old):
+				new, issues = PETRA.fix_timestamps(old)
+				np.testing.assert_array_equal(new, expected)
+				self.assertEqual({k for k, _, _ in issues}, {"unknown"})
+		self.assertEqual(len(PETRA.fix_timestamps([])[0]), 0)
+		np.testing.assert_array_equal(PETRA.normalize_timestamps_preserve_increase([7]), [7])
+
+	def test_scan_dataset(self):
+		# the flats after the darks logged with the darks' start, the final flat with the projections' start
+		times = T0 + np.array([0, 100, 0, 100, 200, 1000, 1100, 1200, 1300, 1000], dtype=np.uint64)
+
+		def mutate(h5):
+			for name in ("image_key", "image_file"):
+				replace(h5, "entry/scan/data/%s/time" % name, times)
+			moving = np.array(KEYS) != 2
+			for name in ("s_rot", "s_stage_x"):
+				replace(h5, "entry/scan/data/%s/time" % name, times[moving])
+		with tempfile.TemporaryDirectory() as tmp:
+			path = make_scan(os.path.join(tmp, "scan.h5"), mutate=mutate)
+			with self.assertLogs(PETRA.log, "WARNING") as logged:
+				df = PETRA.scanDataset(path, includeCurrent=True)
+			with h5py.File(path, "r") as h5:
+				names = [n.decode() for n in h5["entry/scan/data/image_file/value"][()]]
+			self.assertEqual(list(df["image_file"]), names)                    # the order of the HDF5 file
+			# flats centred between darks and projections (gaps 350 ms), final flat 350 ms after the projections
+			np.testing.assert_array_equal(df.index.to_numpy().astype(np.int64) - T0, [0, 100, 450, 550, 650, 1000, 1100, 1200, 1300, 1650])
+			self.assertTrue(df["s_rot"].iloc[2:].notna().all())                # logs at the original times are inserted
+			self.assertTrue(any(PETRA.TIMESTAMP_FLAT_BLOCKS in m for m in logged.output))
+			df = PETRA.scanDataset(path, fixKnownTimestampIssues=False)
+			np.testing.assert_array_equal(df.index.to_numpy().astype(np.int64) - T0, [0, 100, 101, 201, 301, 1000, 1100, 1200, 1300, 1301])
+
+
 class TestPETRA(unittest.TestCase):
 
 	def setUp(self):
