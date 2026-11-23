@@ -6,12 +6,12 @@ Processing of h5 format used to output Petra III data
 @author: Vojtech Kulvait
 @date: 2022-2026
 """
+import contextlib
 import h5py
 import os
 import pandas as pd
 import numpy as np
 import sys
-from bisect import bisect_left
 from scipy.signal import find_peaks
 
 import logging
@@ -27,6 +27,34 @@ ch.setFormatter(formatter)
 # Add the handler to the logger
 log.addHandler(ch)
 log.propagate = False # Prevent log messages from being propagated to the root logger
+
+
+class BeamCurrentError(ValueError):
+	"""The beam current of a scan file is missing or unusable (entry/hardware/beam_current/current)."""
+
+
+@contextlib.contextmanager
+def _open_h5(h5file):
+	"""The HDF5 file of a file name (opened and closed here), or the file of an open h5py.File or
+	h5py.Group (left open). All functions of this module read through it, so a function opens the
+	file once, also for the functions it calls."""
+	if isinstance(h5file, (str, os.PathLike)):
+		with h5py.File(h5file, "r") as h5:
+			yield h5
+	else:
+		yield h5file.file
+
+
+def _scalar_number(value):
+	"""value as a finite float if it is a single number (not bool), else None."""
+	if isinstance(value, np.ndarray) and value.size == 1:
+		value = value.reshape(()).item()
+	if isinstance(value, np.generic):
+		value = value.item()
+	if isinstance(value, bool) or not isinstance(value, (int, float)):
+		return None
+	value = float(value)
+	return value if np.isfinite(value) else None
 
 
 def findInsertionEvents(
@@ -135,27 +163,24 @@ def beamCurrentDataset(h5file, timeOffsetSec=None):
 		timestampadjustment = np.int64(0)
 	else:
 		timestampadjustment = np.int64(timeOffsetSec * 1000)
-	# Determine if h5file is a file path or already an h5py.File object
-	h5_opened_here = False
-	if isinstance(h5file, str):
-		h5 = h5py.File(h5file, 'r')
-		h5_opened_here = True
-	else:
-		h5 = h5file
-	try:
-		beam_current_path = "entry/hardware/beam_current"
-		if beam_current_path not in h5:
-			raise KeyError(f"Path '{beam_current_path}' not found in HDF5 file {os.path.realpath(h5.filename)}.")
-		# Extract raw timestamp IDs (in milliseconds since epoch)
-		ID = list(h5["entry/hardware/beam_current/current/time"])
-		# Convert raw timestamps to datetime objects for human-readable interpretation
-		time = list(pd.to_datetime(i, unit="ms") for i in ID)
-		# Extract beam current values (in mA) from the HDF5 file
-		value = list(h5["entry/hardware/beam_current/current/value"])
-		# Combine time and current values into a list of tuples
-		agg = list(zip(time, value))
-		# Create a DataFrame from the combined data, with timestamps as the index
-		df = pd.DataFrame(agg, columns=["time", "current"], index=ID)
+	with _open_h5(h5file) as h5:
+		filename = os.path.realpath(h5.filename)
+		beam_current_path = "entry/hardware/beam_current/current"
+		for part in ("time", "value"):
+			if f"{beam_current_path}/{part}" not in h5:
+				raise BeamCurrentError(f"No beam current in {filename}: '{beam_current_path}/{part}' does not exist.")
+		# Raw timestamps (milliseconds since epoch) and beam current values (mA)
+		ID = np.asarray(h5[f"{beam_current_path}/time"][()]).astype(np.uint64).ravel()
+		value = np.asarray(h5[f"{beam_current_path}/value"][()], dtype=np.float64).ravel()
+		if len(ID) != len(value):
+			raise BeamCurrentError(f"Beam current in {filename} has {len(ID)} timestamps but {len(value)} values.")
+		# Readings without a valid value carry no information
+		valid = np.isfinite(value)
+		if not valid.all():
+			log.warning("Ignoring %d of %d beam current readings without a finite value in %s." % ((~valid).sum(), len(value), filename))
+			ID, value = ID[valid], value[valid]
+		# DataFrame with timestamps as the index
+		df = pd.DataFrame({"time": pd.to_datetime(ID.astype(np.int64), unit="ms"), "current": value}, index=ID)
 		# Remove duplicate timestamps (keep first occurrence only)
 		# This is important to avoid issues in interpolation or reindexing
 		# see https://stackoverflow.com/questions/13035764/remove-pandas-rows-with-duplicate-indices
@@ -177,11 +202,7 @@ def beamCurrentDataset(h5file, timeOffsetSec=None):
 			df.index = pd.Index(adjusted.astype(np.uint64), name=df.index.name)
 			# Update the time column to reflect the adjusted timestamps
 			df["time"] = pd.to_datetime(df.index, unit="ms")
-		# Close the HDF5 file if it was opened here
 		return df
-	finally:
-		if h5_opened_here:
-			h5.close()
 
 
 def read_scalar_h5(item):
@@ -216,11 +237,45 @@ def read_scalar_h5(item):
 			val = val.decode("utf-8", errors="replace")
 	return val
 
-#Sometimes values as entry/beamline/experiment are stored as () shape but sometimes as (1,) shape
-#This function extracts the string value from either case, ensuring consistent output regardless of the original shape.
+def _attribute_value(value):
+	"""An HDF5 attribute as a python value: numpy to python, bytes to str, arrays to lists; one-element
+	sequences collapse to their element (older files store attributes as (1,) object arrays)."""
+	if isinstance(value, np.ndarray):
+		return _attribute_value(value.tolist())
+	if isinstance(value, np.generic):
+		return _attribute_value(value.item())
+	if isinstance(value, (bytes, bytearray)):
+		try:
+			return value.decode("utf-8")
+		except UnicodeDecodeError:
+			return value.decode("utf-8", errors="replace")
+	if isinstance(value, (list, tuple)):
+		if len(value) == 1:
+			return _attribute_value(value[0])
+		return [_attribute_value(v) for v in value]
+	return value
+
+
+def _attribute_of_parent(h5, path):
+	"""(True, value) if path names an attribute of its parent group (other than NX_class), else (False, None)."""
+	parent, _, name = path.rpartition("/")
+	if name != "NX_class" and (parent == "" or isinstance(h5.get(parent), h5py.Group)):
+		group = h5[parent] if parent else h5
+		if name in group.attrs:
+			return True, _attribute_value(group.attrs[name])
+	return False, None
+
+
+#Sometimes values as entry/beamline/experiment are stored as () shape but sometimes as (1,) shape,
+#or as an attribute of the group; this function extracts the string value from any of these.
 def extractStringEntry(h5, path):
-	if path in h5:
-		value = read_scalar_h5(h5[path])
+	is_attribute, value = _attribute_of_parent(h5, path)
+	if path in h5 or is_attribute:
+		if not is_attribute:
+			value = read_scalar_h5(h5[path])
+		if value is None:
+			log.warning("The path '%s' is empty in %s." % (path, os.path.realpath(h5.filename)))
+			return None
 		if isinstance(value, str):
 			return value
 		else:
@@ -230,15 +285,21 @@ def extractStringEntry(h5, path):
 		return None
 
 def read_group_scalars(group):
-	"""Read every dataset in a group into a dict. Subgroups are skipped."""
+	"""The datasets (read_scalar_h5) and the attributes other than NX_class of a group as a dict; an
+	attribute wins over a dataset of the same name. Subgroups are skipped."""
 	out = {}
 	for key, item in group.items():
 		if isinstance(item, h5py.Dataset):
 			out[key] = read_scalar_h5(item)
+	out.update({key: _attribute_value(value) for key, value in group.attrs.items() if key != "NX_class"})
 	return out
 
 def getExperimentInfo(h5file, overrideMagnification=None):
-	h5 = h5py.File(h5file, 'r')
+	with _open_h5(h5file) as h5:
+		return _experimentInfo(h5, h5.filename, overrideMagnification)
+
+
+def _experimentInfo(h5, h5file, overrideMagnification=None):
 	info = {}
 	info["h5"] = os.path.realpath(h5file)
 	info["h5_name"] = os.path.basename(info["h5"])
@@ -250,7 +311,7 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 		info["beamline"] = beamlineString
 	# Extract start and end times from the image_file dataset if available
 	if 'entry/scan/data/image_file/time' in h5:
-		image_file_time = pd.to_datetime(h5['entry/scan/data/image_file/time'][:], unit="ms")
+		image_file_time = pd.to_datetime(np.asarray(h5['entry/scan/data/image_file/time'][:]).astype(np.int64), unit="ms")
 		if len(image_file_time) > 0:
 			start = image_file_time.min()
 			end = image_file_time.max()
@@ -259,9 +320,14 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 			info["scan_frame_count"] = len(image_file_time)
 			info["scan_duration_sec"] = (end - start).total_seconds()
 			info["scan_fps"] = len(image_file_time) / info["scan_duration_sec"] if info["scan_duration_sec"] > 0 else None
-		if 'entry/scan/data/image_key/value' in h5:
-			image_file_key = h5['entry/scan/data/image_key/value'][:]
-			image_times = image_file_time[image_file_key == 0] # Assuming key 0 corresponds to actual frames
+	# Sample frames (image_key 0) from the image_key log, its time and value have the same length
+	if 'entry/scan/data/image_key/value' in h5 and 'entry/scan/data/image_key/time' in h5:
+		image_key = np.asarray(h5['entry/scan/data/image_key/value'][:])
+		image_key_time = np.asarray(h5['entry/scan/data/image_key/time'][:])
+		if len(image_key) != len(image_key_time):
+			log.warning("image_key has %d values but %d times in %s; sample frame statistics skipped." % (len(image_key), len(image_key_time), info["h5"]))
+		else:
+			image_times = pd.to_datetime(image_key_time[image_key == 0].astype(np.int64), unit="ms")
 			if len(image_times) > 0:
 				info["sample_frame_count"] = len(image_times)
 				info["sample_duration_sec"] = (image_times.max() - image_times.min()).total_seconds()
@@ -269,66 +335,48 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 	setup = {}
 	camera = {}
 	if 'entry/scan/setup' in h5:
-		setup_group = h5['entry/scan/setup']
 		# Iterate over all items in the setup group
-		setup = read_group_scalars(setup_group)
-		if setup.get("pos_o_ccd_dist") is not None:
-			info["propagation_distance_mm"] = round(setup["pos_o_ccd_dist"], 0)
-		elif setup.get("o_ccd_dist") is not None:
-			info["propagation_distance_mm"] = round(setup["o_ccd_dist"], 0)
-		if setup.get("pos_p05_energy") is not None:
-			info["energy_keV"] = round(setup["pos_p05_energy"] / 1000, 3)
-		elif setup.get("pos_p07_energy") is not None:
-			info["energy_keV"] = round(setup["pos_p07_energy"] / 1000, 3)
-		elif setup.get("p05_energy") is not None:
-			info["energy_keV"] = round(setup["p05_energy"] / 1000, 3)
-		elif setup.get("p07_energy") is not None:
-			info["energy_keV"] = round(setup["p07_energy"] / 1000, 3)
+		setup = read_group_scalars(h5['entry/scan/setup'])
+		for key in ("pos_o_ccd_dist", "o_ccd_dist"):
+			distance = _scalar_number(setup.get(key))
+			if distance is not None:
+				info["propagation_distance_mm"] = round(distance, 0)
+				break
+		for key in ("pos_p05_energy", "pos_p07_energy", "p05_energy", "p07_energy"):
+			energy = _scalar_number(setup.get(key))
+			if energy is not None:
+				info["energy_keV"] = round(energy / 1000, 3)
+				break
 	else:
 		log.warning("The path 'entry/scan/setup' does not exist in %s." % info["h5"])
-	# Check for the camera data path
-	if 'entry/hardware/camera' in h5:
-		camera_group = h5['entry/hardware/camera']
-	elif 'entry/hardware/camera1' in h5:
-		camera_group = h5['entry/hardware/camera1']
-	else:
-		camera_group = None
+	camera_group = _camera_group(h5)
+	if camera_group is None:
 		log.warning("Neither 'entry/hardware/camera' nor 'entry/hardware/camera1' exists in %s." % info["h5"])
-	# If a camera group was found, extract the data
-	if camera_group is not None:
+	else:
 		camera = read_group_scalars(camera_group)
+		values = _camera_values(camera_group, camera, overrideMagnification)
 		if overrideMagnification is not None:
 			camera["magnification"] = overrideMagnification
-		elif "magnification" not in camera and "calibration" in camera_group:
-			calibration_group = camera_group["calibration"]
-			if "magnification" in calibration_group:
-				camera["magnification"] = read_scalar_h5(calibration_group["magnification"])
-		if "px_size" in camera:
-			camera["pixelsize"] = camera["px_size"]
-		if "pixel_size" in camera:
-			camera["pixelsize"] = camera["pixel_size"]
-		if "senzor_xsize" in camera:
-			camera["sensorsize_x"] = camera["senzor_xsize"]
-		if "senzor_ysize" in camera:
-			camera["sensorsize_y"] = camera["senzor_ysize"]
-		if "roi_xsize" in camera:
-			camera["roi_width"] = camera["roi_xsize"]
-		if "roi_ysize" in camera:
-			camera["roi_height"] = camera["roi_ysize"]
-		if "roi_width" not in camera and "sensorsize_x" in camera:
-			camera["roi_width"] = camera["sensorsize_x"]
-		if "roi_height" not in camera and "sensorsize_y" in camera:
-			camera["roi_height"] = camera["sensorsize_y"]
-		if "magnification" in camera and "pixelsize" in camera:
-			info["pix_size"] = camera["pixelsize"] / camera["magnification"]
-			if "roi_width" in camera:
-				info["field_of_view_x"] = info["pix_size"] * camera["roi_width"]
-			elif "sensorsize_x" in camera:
-				info["field_of_view_x"] = info["pix_size"] * camera["sensorsize_x"]
-			if "roi_height" in camera:
-				info["field_of_view_y"] = info["pix_size"] * camera["roi_height"]
-			elif "sensorsize_y" in camera:
-				info["field_of_view_y"] = info["pix_size"] * camera["sensorsize_y"]
+		elif values["magnification"] is not None:
+			camera["magnification"] = values["magnification"]
+		# Names of older files, as the newer ones
+		for key in ("pixelsize", "sensorsize_x", "sensorsize_y", "roi_width", "roi_height"):
+			if values[key] is not None:
+				camera[key] = values[key]
+		# Without a ROI, the whole sensor
+		for roi, sensor in (("roi_width", "sensorsize_x"), ("roi_height", "sensorsize_y")):
+			if values[roi] is None and values[sensor] is not None:
+				camera[roi] = values[sensor]
+		if values["magnification"] is not None and values["pixelsize"] is not None:
+			info["pix_size"] = values["pixelsize"] / values["magnification"]
+			width = values["roi_width"] if values["roi_width"] is not None else values["sensorsize_x"]
+			height = values["roi_height"] if values["roi_height"] is not None else values["sensorsize_y"]
+			if width is not None:
+				info["field_of_view_x"] = info["pix_size"] * width
+			if height is not None:
+				info["field_of_view_y"] = info["pix_size"] * height
+		else:
+			log.warning("No usable camera pixelsize and magnification in %s; pix_size not set." % info["h5"])
 	# Compute fresnel number if propagation distance, energy, and pixel size are available
 	if "propagation_distance_mm" in info and "energy_keV" in info and "pix_size" in info and  info["energy_keV"] > 0 and info["propagation_distance_mm"] > 0 and info["pix_size"] > 0:
 		wavelength_m = 1.2398419843320026e-9 / info["energy_keV"]  # Convert keV to eV for wavelength calculation
@@ -341,22 +389,39 @@ def getExperimentInfo(h5file, overrideMagnification=None):
 	return info
 
 
-# Funcion no longer used, kept for reference use insert_label instead
-def _insertToDf(df, dat, name):
-	time = dat["%s/time" % (name)]
-	value = dat["%s/value" % (name)]
-	if name == "image_file" and h5py.__version__.startswith("3"):
-		value = value.asstr()
-	if len(time) != len(value):
-		raise IOError("len(time)=%d len(value)=%d for entry %s" % (len(time), len(value), name))
-	for i in range(len(value)):
-		t = time[i]
-		v = value[i]
-		if t in df.index:
-			df.loc[t][name] = v
-		else:
-			raise IOError("Can not insert value=%s into the column=%s because related time=%s is not in index" %
-						  (v, name, t))
+def _camera_group(h5):
+	"""entry/hardware/camera, else entry/hardware/camera1, else None."""
+	for path in ("entry/hardware/camera", "entry/hardware/camera1"):
+		if path in h5:
+			return h5[path]
+	return None
+
+
+def _camera_values(camera_group, camera, overrideMagnification=None):
+	"""Camera numbers under the names of the newer files, None where missing, empty or not a number.
+
+	Older names: px_size/pixel_size, senzor_xsize/senzor_ysize, roi_xsize/roi_ysize. The
+	magnification is taken from overrideMagnification, the camera group or its calibration subgroup;
+	a magnification of 0 counts as missing.
+	"""
+	def first(*keys):
+		for key in keys:
+			value = _scalar_number(camera.get(key))
+			if value is not None:
+				return value
+		return None
+	values = {
+		"pixelsize": first("pixel_size", "px_size", "pixelsize"),
+		"sensorsize_x": first("senzor_xsize", "sensorsize_x"),
+		"sensorsize_y": first("senzor_ysize", "sensorsize_y"),
+		"roi_width": first("roi_xsize", "roi_width"),
+		"roi_height": first("roi_ysize", "roi_height"),
+	}
+	magnification = _scalar_number(overrideMagnification) if overrideMagnification is not None else first("magnification")
+	if magnification is None and overrideMagnification is None and isinstance(camera_group.get("calibration"), h5py.Group):
+		magnification = _scalar_number(read_group_scalars(camera_group["calibration"]).get("magnification"))
+	values["magnification"] = magnification if magnification else None
+	return values
 
 
 def normalize_timestamps_preserve_increase(old_ts):
@@ -377,7 +442,7 @@ def normalize_timestamps_preserve_increase(old_ts):
 
 
 def getBasicDatasetInfo(h5file):
-	with h5py.File(h5file, 'r') as h5:
+	with _open_h5(h5file) as h5:
 		data = h5["entry/scan/data"]
 		key_time = data["image_key/time"]
 		key_value = data["image_key/value"]
@@ -400,7 +465,7 @@ def getBasicDatasetInfo(h5file):
 			# Save original indices
 			duplicates["orig_index"] = duplicates.index
 			n_duplicated_times = duplicates['time'].nunique()
-			abs_h5file = os.path.abspath(h5file)
+			abs_h5file = os.path.realpath(h5.filename)
 			log.warning("There is %d duplicated entries in %d distinct times in file %s." %
 				  (len(duplicates), n_duplicated_times, abs_h5file))
 			# Build key sets per time
@@ -425,13 +490,22 @@ def insert_label(df, data, label_name, key_col="image_key"):
 	Insert an HDF5 dataset 'label_name' into DataFrame 'df' based on timestamp alignment.
 	Handles full DataFrame or specific filtered key subsets.
 	"""
-	time_ds = np.array(data[f"{label_name}/time"])
-	value_ds = np.array(data[f"{label_name}/value"])
+	for part in ("time", "value"):
+		if not isinstance(data.get(f"{label_name}/{part}"), h5py.Dataset):
+			raise ValueError(f"{label_name} has no {part} dataset.")
+	time_ds = np.asarray(data[f"{label_name}/time"][()])
+	value_dataset = data[f"{label_name}/value"]
+	if h5py.check_string_dtype(value_dataset.dtype) is not None:
+		value_ds = np.asarray(value_dataset.asstr()[()], dtype=object)
+	else:
+		value_ds = np.asarray(value_dataset[()])
+	if time_ds.ndim != 1 or value_ds.ndim != 1:
+		raise ValueError(f"{label_name} time and value must be 1-D, got shapes {time_ds.shape} and {value_ds.shape}.")
+	if len(time_ds) != len(value_ds):
+		raise ValueError(f"{label_name} has {len(time_ds)} times but {len(value_ds)} values.")
 	# In the situation time_ds and value_ds are empty, raise ValueError
-	if len(time_ds) == 0 and len(value_ds) == 0:
+	if len(time_ds) == 0:
 		raise ValueError(f"{label_name} has empty time and value datasets.")
-	if h5py.__version__.startswith("3") and value_ds.dtype.kind == 'O':
-		value_ds = value_ds.asstr()[:]
 	# Case 1: Full DataFrame
 	if len(time_ds) == len(df):
 		if not np.all(time_ds == df["time"].values):
@@ -458,23 +532,36 @@ def insert_label(df, data, label_name, key_col="image_key"):
 
 #Note that timeOffsetSec describes the offset to be applied to the current measurements to be in sync with the frame time data
 def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None):
+	"""DataFrame of the frames of a scan: time, image_key, image_file and the logs of entry/scan/data.
+
+	With includeCurrent, the column current holds the beam current interpolated at the frame times
+	(constant before the first and after the last reading); raises BeamCurrentError if the file has
+	no usable beam current.
+	"""
 	if timeOffsetSec is None:
 		timeOffsetSec = 0.0
-	h5 = h5py.File(h5file, 'r')
-	abs_h5file = os.path.abspath(h5file)
+	with _open_h5(h5file) as h5:
+		return _scanDataset(h5, includeCurrent, timeOffsetSec)
+
+
+def _scanDataset(h5, includeCurrent, timeOffsetSec):
+	abs_h5file = os.path.realpath(h5.filename)
+	# Create basic dataset info based on image_key and image_file
+	df = getBasicDatasetInfo(h5)
 	data = h5["entry/scan/data"]
 	labels = list(data.keys())
 	if len(labels) < 1:
 		raise ValueError("Error: labels count is %d!" % (len(labels)))
-	# Create basic dataset info based on image_key and image_file
-	df = getBasicDatasetInfo(h5file)
 	# Insert labels except image_key and image_file
 	for lab in labels:
 		if lab not in ["image_key", "image_file"]:
+			if not isinstance(data[lab], h5py.Group):
+				log.warning(f"Label '{lab}' not inserted into DataFrame from file {abs_h5file}: not a group with time and value.")
+				continue
 			try:
 				df = insert_label(df.copy(deep=True), data, lab, key_col="image_key")  # Test on a copy to avoid partial insertions
 			except ValueError as ve:
-				print(f"Label '{lab}' not inserted into DataFrame from file {abs_h5file}: {ve}")
+				log.warning(f"Label '{lab}' not inserted into DataFrame from file {abs_h5file}: {ve}")
 	# Normalize timestamps to ensure strictly increasing index
 	time_values = df["time"].values.astype(np.int64)
 	if not all(np.diff(time_values) > 0):
@@ -484,50 +571,42 @@ def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None):
 	# Set index to time for further processing
 	df.index = df["time"].values
 	# Convert time column to datetime in-place
-	df["time"] = pd.to_datetime(df["time"], unit="ms")
+	df["time"] = pd.to_datetime(df["time"].astype(np.int64), unit="ms")
 	if includeCurrent:
-		df["current"] = np.nan
-		currentFrame = beamCurrentDataset(h5file, timeOffsetSec=timeOffsetSec)
-		for ind in df.index:
-			posAfterEq = bisect_left(currentFrame.index, ind)
-			if posAfterEq == len(currentFrame.index):
-				df.loc[ind, "current"] = currentFrame.iloc[posAfterEq - 1]["current"]
-			elif posAfterEq == 0 or currentFrame.index[posAfterEq] == ind:
-				df.loc[ind, "current"] = currentFrame.iloc[posAfterEq]["current"]
-			else:
-				t0 = float(currentFrame.index[posAfterEq - 1])
-				cur0 = float(currentFrame.iloc[posAfterEq - 1]["current"])
-				t1 = float(currentFrame.index[posAfterEq])
-				cur1 = float(currentFrame.iloc[posAfterEq]["current"])
-				t = float(ind)
-				cur = cur0 + ((t - t0) / (t1 - t0)) * (cur1 - cur0)
-				if np.isnan(cur):
-					print("Cur is NaN t0=%f cur0=%f t1=%f cur1=%f t=%f ind=%d posAfterEq=%d len(currentFrame)=%d!" %
-						  (t0, cur0, t1, cur1, t, ind, posAfterEq, len(currentFrame)))
-					raise ValueError("Interpolation error producing NaN beam curent.")
-				df.loc[ind, "current"] = cur
+		currentFrame = beamCurrentDataset(h5, timeOffsetSec=timeOffsetSec)
+		if currentFrame.empty:
+			raise BeamCurrentError(f"No beam current readings in {abs_h5file}, can not include the current.")
+		current_times = currentFrame.index.to_numpy().astype(np.float64)
+		frame_times = df.index.to_numpy().astype(np.float64)
+		outside = int(np.sum(frame_times < current_times[0]) + np.sum(frame_times > current_times[-1]))
+		if outside > 0:
+			log.warning("%d of %d frames of %s are outside the beam current readings; the first/last reading is used for them." % (outside, len(df), abs_h5file))
+		# Linear interpolation between the readings, constant outside of them
+		df["current"] = np.interp(frame_times, current_times, currentFrame["current"].to_numpy(dtype=np.float64))
 	df = df.sort_values("time", ascending=True)
 	return df
 
 
 def imageDataset(h5file, image_key=0, includeCurrent=True, includePixelShift=False, overrideMagnification=None):
-	df = scanDataset(h5file, includeCurrent)
+	with _open_h5(h5file) as h5:
+		return _imageDataset(h5, image_key, includeCurrent, includePixelShift, overrideMagnification)
+
+
+def _imageDataset(h5, image_key, includeCurrent, includePixelShift, overrideMagnification):
+	h5file = os.path.realpath(h5.filename)
+	df = scanDataset(h5, includeCurrent)
 	df = df.loc[df["image_key"] == image_key]
 	df = df.assign(frame_ind=np.arange(len(df)))
 	if includePixelShift:
-		h5 = h5py.File(h5file, 'r')
-		if "/entry/hardware/camera1" in h5:
-			cam = "camera1"
-		elif "/entry/hardware/camera" in h5:
-			cam = "camera"
-		else:
+		if "s_stage_x" not in df.columns:
+			raise ValueError("No s_stage_x log in %s, can not compute the pixel shift." % h5file)
+		camera_group = _camera_group(h5)
+		if camera_group is None:
 			raise ValueError("There is no entry/hardware/camera or entry/hardware/camera1 entry in %s." % h5file)
-		pix_size_cam = float(h5["entry/hardware/%s/pixelsize" % cam][0])
-		if overrideMagnification is not None:
-			pix_size_mag = overrideMagnification
-		else:
-			pix_size_mag = float(h5["entry/hardware/%s/magnification" % cam][0])
-		pix_size = float(pix_size_cam / pix_size_mag)
+		values = _camera_values(camera_group, read_group_scalars(camera_group), overrideMagnification)
+		if values["pixelsize"] is None or values["magnification"] is None:
+			raise ValueError("No usable camera pixelsize and magnification in %s, can not compute the pixel shift." % h5file)
+		pix_size = values["pixelsize"] / values["magnification"]
 		# zeropos = df["s_stage_x"].iloc[0]#Previous
 		zeropos = 0.5 * (df["s_stage_x"].max() + df["s_stage_x"].min())
 		# print("p0 =%f min=%f max=%f zeropos=%f pix_size=%f"%(df["s_stage_x"].iloc[0], df["s_stage_x"].min(), df["s_stage_x"].max(), zeropos, pix_size))
