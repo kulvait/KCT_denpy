@@ -107,8 +107,10 @@ class TestPyramid(unittest.TestCase):
 		self.assertEqual(group["1"].shape, (2, 4, 4))
 		self.assertIn("ome", group.attrs)
 		import zipfile
-		names = zipfile.ZipFile(self.path("z.zip")).namelist()
-		self.assertEqual(len(names), len(set(names)))  # every entry once
+		with zipfile.ZipFile(self.path("z.zip")) as archive:
+			names = archive.namelist()
+			self.assertIsNone(archive.testzip())  # CRC-32 of every entry
+		self.assertEqual(len(names), len(set(names)))  # every entry once, also the rewritten zarr.json
 		self.assertFalse(os.path.exists(self.path("z.zip.tmpdir")))
 
 	def test_reused_frame_buffer(self):

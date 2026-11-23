@@ -39,6 +39,8 @@ from dataclasses import dataclass, asdict
 import numpy as np
 import zarr
 
+from denpy import ZARZS
+
 from denpy import ZAR
 
 # Create a logger specific to this module
@@ -272,16 +274,16 @@ def write_pyramid(output, frames, shape, dtype, spec=None, *, zarr_format=3, com
 				  overwrite=False, ome=True, name="image", voxel_size=(1.0, 1.0, 1.0), unit=None, verbose=False):
 	"""Write a Z,Y,X stack as a pyramid, by default an OME-NGFF image; returns the PyramidWriter.
 
-	output   path of a directory store, a path ending with .zip (zip store: written as a directory
-	         store next to it first and packed at the end, so that every entry is in the zip once),
-	         or a zarr store object
+	output   path of a directory store, a path ending with .zip (zip store, written directly with
+	         ZARZS.ZipStore, which keeps every entry once although the group metadata is written again
+	         at the end), or a zarr store object
 	frames   the frames (Y, X) in Z order: an iterable, or a callable k -> frame
 	shape    (z, y, x), dtype, spec, compressors, chunks: see PyramidWriter
 	ome      write OME-NGFF metadata (ome_ngff_attributes) with name, voxel_size, unit and the
 	         data range as display window
 	"""
 	spec = spec if spec is not None else PyramidSpec()
-	zip_path = None
+	zip_store = None
 	if isinstance(output, (str, os.PathLike)):
 		path = os.fspath(output)
 		if os.path.exists(path):
@@ -292,10 +294,9 @@ def write_pyramid(output, frames, shape, dtype, spec=None, *, zarr_format=3, com
 			else:
 				os.remove(path)
 		if path.endswith(".zip"):
-			# A zip entry cannot be replaced, but the group metadata is written again at the end
-			zip_path, store = path, path + ".tmpdir"
-			if os.path.exists(store):
-				shutil.rmtree(store)
+			# ZARZS.ZipStore replaces the group metadata written again at the end (zarr's ZipStore
+			# would add a second zarr.json) and lets threads write chunks in parallel
+			store = zip_store = ZARZS.ZipStore(path, mode="w")
 		else:
 			store = path
 	else:
@@ -315,18 +316,6 @@ def write_pyramid(output, frames, shape, dtype, spec=None, *, zarr_format=3, com
 		window = (writer.min, writer.max) if writer.min is not None else None
 		group.attrs.update(ome_ngff_attributes(spec, writer.shapes, zarr_format=zarr_format, name=name,
 											   voxel_size=voxel_size, unit=unit, window=window))
-	if zip_path is not None:
-		_pack_zip(store, zip_path)
-		shutil.rmtree(store)
+	if zip_store is not None:
+		zip_store.close()
 	return writer
-
-
-def _pack_zip(directory, zip_path):
-	"""Pack a directory store into a zip store (entries uncompressed, as zarr's ZipStore writes them)."""
-	import zipfile
-	with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
-		for root, dirs, files in os.walk(directory):
-			dirs.sort()
-			for name in sorted(files):
-				full = os.path.join(root, name)
-				archive.write(full, os.path.relpath(full, directory))
