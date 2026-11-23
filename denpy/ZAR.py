@@ -32,17 +32,24 @@ log.propagate = False  # Prevent log messages from being propagated to the root 
 #array2d.shape = (dimy, dimx) = (axis0, axis1)
 #array3d.shape=(dimz, dimy, dimx)= (axis0, axis1, axis2)
 
+_codecs_registered = False
+
+
 def register_codecs():
 	"""Register the imagecodecs codecs (jpeg2k, htj2k, jpegxl, jpegxr, avif, zfp, sz3, ...) with zarr v3
-	and numcodecs (zarr v2). Writing registers them through get_compressor; a reader must call this
-	before opening an array written with them, else zarr reports e.g. "Unknown codec: 'imagecodecs_jpeg2k'"."""
+	and numcodecs (zarr v2), once per process and without output. Writing registers them through
+	get_compressor; a reader must call this before opening an array written with them, else zarr
+	reports e.g. "Unknown codec: 'imagecodecs_jpeg2k'"."""
+	global _codecs_registered
+	if _codecs_registered:
+		return
 	from imagecodecs.zarr import register_codecs as register_zarr3
 	from imagecodecs.numcodecs import register_codecs as register_numcodecs
-	register_zarr3()
-	register_numcodecs()
+	register_zarr3(verbose=False)
+	register_numcodecs(verbose=False)
+	_codecs_registered = True
 
 
-# get_compressor imports imagecodecs' own register_codecs locally in some branches, so it uses this name
 _register_image_codecs = register_codecs
 
 
@@ -122,18 +129,15 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 		elif name == "avif":
 			_register_image_codecs()
 			#clevel -1 AVIF_QUALITY_DEFAULT, 100 = AVIF_QUALITY_BEST = AVIF_QUALITY_LOSSLESS, 0 = AVIF_QUALITY_WORST
-			from imagecodecs.numcodecs import Avif, register_codecs
-			register_codecs()
+			from imagecodecs.numcodecs import Avif
 			return Avif(level=clevel, **codec_kwargs)
 		elif name == "jpegxr":
 			_register_image_codecs()
-			from imagecodecs.numcodecs import Jpegxr, register_codecs
-			register_codecs()
+			from imagecodecs.numcodecs import Jpegxr
 			return Jpegxr(level=clevel, **codec_kwargs)
 		elif name == "jpegxl":
 			_register_image_codecs()
-			from imagecodecs.numcodecs import Jpegxl, register_codecs
-			register_codecs()
+			from imagecodecs.numcodecs import Jpegxl
 			if clevel == 0:
 				jpegxl_codec = Jpegxl(lossless=True, **codec_kwargs)
 			else:
@@ -145,8 +149,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 			return jpegxl_codec
 		elif name == "jpeg2k":
 			_register_image_codecs()
-			from imagecodecs.numcodecs import register_codecs, get_codec, Jpeg2k
-			register_codecs()  # Ensure the codec is registered
+			from imagecodecs.numcodecs import get_codec, Jpeg2k
 			if clevel == 0:
 				jp2_codec = get_codec({"id": Jpeg2k.codec_id, "reversible": True, **codec_kwargs})
 			else:
@@ -154,8 +157,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 			return jp2_codec
 		elif name == "htj2k":
 			_register_image_codecs()
-			from imagecodecs.numcodecs import register_codecs, get_codec, Htj2k
-			register_codecs()  # Ensure the codec is registered
+			from imagecodecs.numcodecs import get_codec, Htj2k
 			if clevel == 0:
 				htj2k_codec = get_codec({"id": Htj2k.codec_id, "reversible": True, **codec_kwargs})
 			else:
@@ -166,16 +168,14 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 			import imagecodecs
 			if not imagecodecs.SZ3.available:
 				raise RuntimeError("SZ3 codec is not available in the current Python imagecodecs package.")
-			from imagecodecs.numcodecs import register_codecs, get_codec, Sz3
-			register_codecs()  # Ensure the codec is registered
+			from imagecodecs.numcodecs import get_codec, Sz3
 			return get_codec({"id": Sz3.codec_id, "mode": "abs", "abs": clevel})  # Use clevel as absolute error for lossy compression
 		elif name == "zfp":
 			_register_image_codecs()
 			import imagecodecs
 			if not imagecodecs.ZFP.available:
 				raise RuntimeError("ZFP codec is not available in the current Python imagecodecs package.")
-			from imagecodecs.numcodecs import register_codecs, get_codec, Zfp
-			register_codecs()  # Ensure the codec is registered
+			from imagecodecs.numcodecs import get_codec, Zfp
 			if clevel == 0:
 				# For lossless compression, use mode="lossless"
 				return get_codec({"id": Zfp.codec_id, "mode": imagecodecs.ZFP.MODE.REVERSIBLE, "numthreads": os.cpu_count()})  # Use clevel as absolute error for lossy compression
@@ -208,15 +208,13 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 			codecs_chain.append(codecs.GzipCodec(level=clevel))
 		elif name == "avif":
 			_register_image_codecs()
-			from imagecodecs.zarr import Avif, register_codecs
-			register_codecs()
+			from imagecodecs.zarr import Avif
 			# clevel -1 AVIF_QUALITY_DEFAULT, 100 = AVIF_QUALITY_BEST = AVIF_QUALITY_LOSSLESS, 0 = AVIF_QUALITY_WORST
 			# Note current implementation for momochrome always force AVIF_QUALITY_LOSSLESS, so clevel is ignored for monochrome images
 			codecs_chain.append(Avif(level=clevel, **codec_kwargs))
 		elif name == "jpegxr":
 			_register_image_codecs()
-			from imagecodecs.zarr import Jpegxr, register_codecs
-			register_codecs()
+			from imagecodecs.zarr import Jpegxr
 			Jpegxr_codec = Jpegxr(level=clevel, **codec_kwargs)
 			codecs_chain.append(Jpegxr_codec)
 		elif name == "jpegxl":
