@@ -1,0 +1,435 @@
+% denpy manual: data formats, zarr helpers and the TIFF stack conversion.
+% Compile with:  tectonic denpy_manual.tex
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage{listings}
+\usepackage{booktabs,tabularx,longtable,array}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{accent}{HTML}{1F5A96}
+\definecolor{termbg}{HTML}{F4F6F8}
+\definecolor{termframe}{HTML}{B8C2CC}
+\definecolor{notebg}{HTML}{EAF2FB}
+\definecolor{warnbg}{HTML}{FDF1E4}
+\definecolor{warnframe}{HTML}{D9822B}
+
+\hypersetup{colorlinks=true,linkcolor=accent,urlcolor=accent}
+\setlist{itemsep=2pt,topsep=4pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\setlength{\emergencystretch}{3em}
+
+\titleformat{\section}{\Large\bfseries\sffamily\color{accent}}{\thesection}{0.8em}{}
+\titleformat{\subsection}{\large\bfseries\sffamily}{\thesubsection}{0.8em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\sffamily}{\thesubsubsection}{0.8em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily denpy --- Manual}
+\fancyhead[R]{\small\sffamily\nouppercase{\leftmark}}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{gray}{$\hookrightarrow$}\space},
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  tabsize=4,
+  upquote=true,
+  language={},
+}
+
+\tcbset{terminalstyle/.style={listing only, colback=termbg, colframe=termframe, boxrule=0.4pt,
+  arc=2pt, left=4pt, right=4pt, top=2pt, bottom=2pt, breakable}}
+\newtcblisting{terminal}{terminalstyle}
+\newtcblisting{terminalsmall}{terminalstyle, listing options={basicstyle=\ttfamily\footnotesize}}
+\newtcolorbox{note}{colback=notebg, colframe=accent, boxrule=0.4pt, arc=2pt, left=6pt, right=6pt, breakable}
+\newtcolorbox{warning}{colback=warnbg, colframe=warnframe, boxrule=0.4pt, arc=2pt, left=6pt, right=6pt, breakable}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+
+\begin{document}
+\sloppy
+
+\begin{titlepage}
+\centering
+\vspace*{4cm}
+{\Huge\bfseries\sffamily\color{accent} denpy\par}
+\vspace{0.6cm}
+{\Large\sffamily Data formats, zarr storage and TIFF stack conversion\par}
+\vspace{1.2cm}
+{\large Manual for denpy 3.0.0\par}
+\vfill
+{\small Vojtěch Kulvait, Helmholtz-Zentrum Hereon\par}
+{\small November 2026\par}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ====================================================================
+\section{Overview}
+
+denpy is the Python package for the data formats of the KCT tomography tools: the DEN format of
+the KCT C++ tools, zarr stores (directory or zip), and the conversion of stacks of TIFF files into
+either. It has no knowledge of beamlines or instruments: the parsing of scan metadata (HDF5 files of
+PETRA III, nanoCT logs) lives in lautools, which builds the conversion specifications described here
+(see the lautools API manual).
+
+\begin{longtable}{@{}p{3.2cm}p{11.6cm}@{}}
+\toprule
+\textbf{Module} & \textbf{Content}\\
+\midrule
+\endhead
+\code{DEN} & DEN files: headers, frames, whole arrays, files of more than 3 dimensions (\S\ref{sec:den}).\\
+\code{ZAR} & zarr codecs: \code{get_compressor}, \code{codec_arguments}, \code{register_codecs} (\S\ref{sec:zar}).\\
+\code{ZARZS} & Zip store that threads write and read in parallel, safe appends (\S\ref{sec:zarzs}).\\
+\code{ZARPYRAMID} & Multiscale pyramids with OME-NGFF metadata (\S\ref{sec:pyramid}).\\
+\code{TIFF} & TIFF stacks to zarr or DEN from a JSON specification, with virtual stacks (lambdas, reductions) (\S\ref{sec:tiff}).\\
+\code{PETRA} & Legacy parser of PETRA III scan HDF5 files; the object oriented implementation is \code{lautools.PETRA} (\S\ref{sec:petra}).\\
+\code{COR}, \code{ECC} & Rotation centre detection on sinograms; image registration (OpenCV ECC).\\
+\code{PHANTOM} & Shepp--Logan like phantoms in 2D and 3D, stored as DEN.\\
+\code{DICOM}, \code{UTILS} & DICOM helpers; parameter files.\\
+\bottomrule
+\end{longtable}
+
+Command line: \code{convertTiffStack} (\S\ref{sec:cli}).
+
+\subsection{Installation}
+
+\begin{terminal}
+pip install denpy              # DEN, PETRA (h5py, pandas), phantoms, ...
+pip install "denpy[zarr]"      # + zarr, tifffile, imagecodecs: ZAR, ZARZS, TIFF, convertTiffStack
+\end{terminal}
+
+On Maxwell the shared Lau environment has denpy with all extras. A reader of zarr arrays written with
+image codecs (htj2k, jpeg2k, jpegxl, ...) must register the codecs first:
+\code{ZAR.register_codecs()}; otherwise zarr reports e.g.\ \emph{Unknown codec: imagecodecs\_htj2k}.
+
+\subsection{Tests}
+
+Every module has a unit test next to it (\code{denpy/test_*.py}):
+
+\begin{terminal}
+python -m pytest denpy/          # in the repository root
+\end{terminal}
+
+% ====================================================================
+\section{DEN files}\label{sec:den}
+
+A DEN file is a 4096 byte header followed by the raw array. The extended header holds the number of
+dimensions, the element size, the majority (x or y major) and the element type, followed by the
+dimensions \emph{dimspec} in the order $(X, Y, Z_1, Z_2, \dots)$: the first dimension changes fastest.
+For a numpy array of shape \code{(..., Y, X)} the dimspec is the shape reversed. Supported types are
+uint8, uint16, int16, uint32, int32, uint64, int64, float32 and float64. Legacy files have a 6 byte
+header with three uint16 dimensions.
+
+\begin{longtable}{@{}p{6.2cm}p{8.6cm}@{}}
+\toprule
+\textbf{Function} & \textbf{Purpose}\\
+\midrule
+\endhead
+\code{readHeader(f)} & Dict: \code{dimspec}, \code{shape} (numpy order), \code{type}, \code{offset}, \code{dimcount}, \code{majority}.\\
+\code{getNumpyArray(f)} & The whole array.\\
+\code{getFrame(f, k, ...)} & Frame $k$ (for more than 3 dimensions a list of indices in dimspec order), optionally a region and a dtype.\\
+\code{writeEmptyDEN(f, dimspec, elementtype)} & A file of zeros of the given size (sparse).\\
+\code{writeFrame(f, k, data, force)} & Write frame $k$ into an existing file.\\
+\code{storeNdarrayAsDEN(f, array)} & Write a whole numpy array.\\
+\code{npDtypeToDenDataType}, \code{denDataTypeToNpDtype} & Type mapping.\\
+\bottomrule
+\end{longtable}
+
+\begin{terminal}
+from denpy import DEN
+info = DEN.readHeader("img.den")          # info["shape"] == (frames, Y, X)
+frame = DEN.getFrame("img.den", 10)
+DEN.storeNdarrayAsDEN("out.den", array, force=True)
+\end{terminal}
+
+% ====================================================================
+\section{Zarr helpers}
+
+\subsection{Codecs: ZAR}\label{sec:zar}
+
+\code{ZAR.get_compressor(name, clevel, zarrv2=False, dtype=None, **kwargs)} returns the codec for a
+name: \code{none}, \code{zstd}, \code{lz4}, \code{gzip}, \code{blosc-*} (zstd, lz4, lz4hc, zlib,
+snappy, blosclz; with bit shuffle), and the image codecs \code{htj2k}, \code{jpeg2k}, \code{jpegxl},
+\code{jpegxr}, \code{avif}, \code{zfp}, \code{sz3}. For zarr v3 it returns a codec list; pass it
+through \code{ZAR.codec_arguments(codec)} to \code{create_array}, which makes an image codec the
+serializer and the others compressors.
+
+\begin{note}
+\textbf{Levels.} For htj2k, jpeg2k and jpegxl \code{clevel 0} is lossless. For htj2k a level
+$>0$ is a quantization step relative to the full range: 0.001 is already very lossy. Blosc with level
+0 does not compress. Bit shuffle is 1.7--4 times faster than byte shuffle for detector data.
+Measured on 5120$\times$3840 uint16 frames, lossless htj2k is the best compromise of size and speed.
+\end{note}
+
+\subsection{Parallel zip store: ZARZS}\label{sec:zarzs}
+
+\code{ZARZS.ZipStore} is a drop-in for \code{zarr.storage.ZipStore}. zarr's own zip store writes and
+reads under one lock, so a zip is much slower than a directory store. In ZARZS each thread computes
+the CRC of its chunk, reserves the space under the lock (microseconds) and writes with \code{pwrite}
+outside it; reads use \code{pread}. The result is a standard zip (entries stored uncompressed, the
+chunks are compressed by zarr) that zarr, Python's zipfile and \code{unzip} read.
+
+\begin{terminal}
+from denpy import ZARZS
+store = ZARZS.ZipStore("volume.zar", mode="w")   # "r", "w" or "a"
+group = zarr.open_group(store, mode="w")
+...                                              # write from as many threads as useful
+store.close()                                    # writes the directory of the zip
+\end{terminal}
+
+Beyond zarr's zip store:
+\begin{itemize}
+\item a key written again replaces its entry (no duplicate names in the zip), \code{delete} and
+  \code{delete_dir} work, so arrays can be overwritten;
+\item \textbf{safe append}: in mode \code{"a"} new entries go after the end of the file and the
+  original size is recorded in \code{<zip>.zarzs-append} until \code{close()}. If the process is
+  killed in between, the store refuses to open the zip and \code{ZARZS.recover(path)} truncates it to
+  the state before the append, byte for byte;
+\item a store that is garbage collected without \code{close()} still leaves a valid zip.
+\end{itemize}
+Limits: threads of one process only (a writable store can not be pickled); entries are uncompressed;
+compressed entries of zips written by other tools are read through zipfile.
+
+\subsection{Pyramids: ZARPYRAMID}\label{sec:pyramid}
+
+\code{ZARPYRAMID.write_pyramid(output, frames, shape, dtype, spec)} writes a Z,Y,X stack frame by frame
+as a multiscale pyramid (arrays \code{0}, \code{1}, \dots), by default with OME-NGFF metadata (version
+0.5 for zarr v3, 0.4 for v2). The \code{PyramidSpec} sets \code{levels} (5), \code{factor} (2),
+\code{axes} (\code{yx}: Z kept, or \code{zyx}) and \code{method} (\code{mean}, \code{nearest},
+\code{max}, \code{min}). \code{frames} is an iterable or a callable $k \mapsto$ frame. An output path
+ending with \code{.zip} is written directly with ZARZS; \code{PyramidWriter} writes level by level
+for callers that produce the frames themselves.
+
+% ====================================================================
+\section{TIFF stacks to zarr or DEN}\label{sec:tiff}
+
+\code{denpy.TIFF} converts stacks of TIFF files into arrays of a zarr store or DEN files as described
+by a JSON specification. The full reference of the format is \code{docs/TIFFSTACK_SPEC.md}; this
+section explains it with examples.
+
+\subsection{The three parts of a specification}
+
+\begin{longtable}{@{}p{3.3cm}p{2.3cm}p{9.2cm}@{}}
+\toprule
+\textbf{Part} & \textbf{Layer} & \textbf{What it says}\\
+\midrule
+\endhead
+\code{tiffstacks} & reading & Which files form a stack, their frame shape and dtype, which frames are known to be missing.\\
+\code{virtualstacks} & computing & Stacks computed from other stacks: a lambda applied frame by frame, or a reduction to one frame; not written.\\
+\code{arrays} / \code{array} & writing & What is written: a stack as it is or computed like a virtual stack, with the storage settings.\\
+\code{output} & writing & Zarr (zip or directory store) or DEN, mode, attributes.\\
+\bottomrule
+\end{longtable}
+
+The shape and dtype of every array follow from the specification alone, before any TIFF is read, so
+a specification is validated completely up front: the files must exist, frame counts must match,
+lambdas are checked and run once on frames of zeros. While writing, every frame is checked against
+the declared shape and dtype. All ranges are half-open, \code{[start, stop)}, as in Python; arrays are
+in numpy order (a frame is \code{[Y, X]}).
+
+\subsection{A first example}
+
+\begin{terminalsmall}
+{
+  "spec": "denpy.tiffstack", "version": 1,
+  "base_dir": "/gpfs/.../raw/scan_042",
+  "tiffstacks": {
+    "dar": {"frames": ["dar_00000.tif", "dar_00001.tif", "dar_00002.tif"],
+            "frame_shape": [3840, 5120], "dtype": "uint16"},
+    "ref": {"frames": [{"pattern": "ref_{:05d}.tif", "range": [0, 20]},
+                       {"pattern": "ref_{:05d}.tif", "range": [1520, 1540]}],
+            "framecount": 40, "frame_shape": [3840, 5120], "dtype": "uint16"},
+    "img": {"frames": [{"pattern": "img_{:05d}.tif", "range": [0, 1500]}], "framecount": 1500,
+            "frame_shape": [3840, 5120], "dtype": "uint16"}
+  },
+  "arrays": {"dar": {"stack": "dar"}, "ref": {"stack": "ref"}, "img": {"stack": "img"}},
+  "defaults": {"zarr": {"codec": {"name": "htj2k", "clevel": 0}}},
+  "output": {"format": "zarr", "store": "zip", "path": "scan_042.zar"}
+}
+\end{terminalsmall}
+
+\begin{terminal}
+convertTiffStack scan_042.json --dry-run     # validate, print shapes and dtypes
+convertTiffStack scan_042.json -j 32 --report report.json
+\end{terminal}
+
+\subsection{Tiff stacks}
+
+\begin{longtable}{@{}p{3cm}p{11.8cm}@{}}
+\toprule
+\textbf{Key} & \textbf{Meaning}\\
+\midrule
+\endhead
+\code{frames} & List of entries in stack order: \code{"a.tif"}; \code{{"file": "a.tif", "page": 3}} (a page of a multi-page TIFF); \code{null} (a frame that should exist but has no file); \code{{"pattern": "img_{:05d}.tif", "range": [start, stop(, step)]}}.\\
+\code{framecount} & Number of frames; \textbf{required} with a pattern entry, checked when given.\\
+\code{frame_shape}, \code{dtype} & Required: \code{[Y, X]} and dtype of every frame.\\
+\code{fill_value} & Value of the \code{null} frames; required when there is one.\\
+\bottomrule
+\end{longtable}
+
+Everything a stack lists must be there: a missing or unreadable file, or a frame of another shape or
+dtype, is an error. The only frames not read from a file are the \code{null} entries the author of the
+specification put there knowingly; the report lists them. Patterns are Python \code{str.format} with
+exactly one integer field. Relative file names resolve against \code{base_dir}, by default the
+directory of the specification file.
+
+\subsection{Virtual stacks: lambdas and reductions}
+
+A virtual stack computes frame $k$ from other stacks:
+
+\begin{terminalsmall}
+"virtualstacks": {
+  "dar_median": {"stack": "dar", "reduce": "median", "dtype": "uint16"},
+  "img_darksub": {"stack": "img", "dtype": "uint16", "clip": true,
+                  "lambda": "lambda x, dark: x.astype('int32') - dark.astype('int32')",
+                  "args": ["dar_median"]}
+}
+\end{terminalsmall}
+
+\begin{itemize}
+\item \code{reduce}: \code{mean}, \code{median}, \code{min}, \code{max}, \code{sum} of the frames: a
+  single frame (2D). \code{median} holds the stack in memory; validation rejects it above
+  \code{max_memory} (default a quarter of the RAM). Null frames are left out.
+\item \code{lambda}: one Python lambda expression with $1+$\code{len(args)} parameters; \code{np} is
+  available. It gets frame $k$ of \code{stack} and one value per \code{args} entry: a 2D source (a
+  reduction) gives the same frame for every $k$, a source with the same number of frames its frame
+  $k$, a number the number.
+\item \code{function}: \code{"module:name"}, an importable function with the same signature, for
+  anything longer than a line (in the Python API also a callable).
+\item \code{dtype}: the result is converted; float to integer rounds to nearest; values outside the
+  range of an integer dtype are an error, or clipped with \code{"clip": true}.
+\end{itemize}
+
+Examples of lambdas:
+\begin{terminalsmall}
+"lambda x: x[100:3940, :]"                                         crop
+"lambda x: x.reshape(1920, 2, 2560, 2).mean(axis=(1, 3))"           2x2 binning
+"lambda x, dark, flat: (x - dark) / np.maximum(flat - dark, 1)"     flat field correction
+\end{terminalsmall}
+
+\begin{warning}
+A specification with lambdas or functions is code: run only specifications you trust, as any script.
+\end{warning}
+
+Names: tiff stacks and virtual stacks are the \emph{sources} and share one namespace; \code{stack}
+and \code{args} refer to sources. Arrays are outputs, their names are paths in the output and may
+repeat a source name (\code{"img": {"stack": "img"}}). To write a computed stack and use it elsewhere,
+define it as a virtual stack and write it with \code{{"stack": name}}; it is computed once.
+
+\subsection{Arrays and output}
+
+An array is \code{{"stack": name}} or computed like a virtual stack, with the storage keys
+\code{grid} (frames as more than one dimension: \code{[30, 50]} gives shape \code{(30, 50, Y, X)}),
+\code{attributes}, \code{overwrite} and \code{zarr}: \code{codec} (\code{{"name": ..., "clevel": ...}},
+the arguments of \code{ZAR.get_compressor}), \code{chunks} (default one frame per chunk; $-1$ is the
+full extent), \code{shards}, \code{dimension_names}. \code{defaults} gives keys common to all arrays.
+With \code{"array"} instead of \code{"arrays"} the zarr root is the array itself, or the DEN output a
+single file.
+
+\begin{longtable}{@{}p{2.6cm}p{12.2cm}@{}}
+\toprule
+\textbf{Output key} & \textbf{Meaning}\\
+\midrule
+\endhead
+\code{format} & \code{"zarr"} or \code{"den"}.\\
+\code{store} & Zarr: \code{"zip"} (ZARZS) or \code{"directory"}; the suffix of the path is not interpreted (\code{.zar} is recommended for zips).\\
+\code{path} & The store; DEN: the file (\code{array}) or the directory of \code{<name>.den} files (\code{arrays}).\\
+\code{mode} & \code{"w-"} (default) refuse existing output, \code{"w"} replace, \code{"a"} add arrays (\code{overwrite} for existing ones).\\
+\code{zarr_format} & 3 (default) or 2.\\
+\code{attributes} & Attributes of the root group.\\
+\code{atomic} & Write to a temporary name and rename at the end (default true).\\
+\code{provenance} & Store spec, expanded frame lists and report as attribute \code{denpy_tiffstack} of each array.\\
+\bottomrule
+\end{longtable}
+
+\begin{note}
+\textbf{A DEN directory is a container.} DEN files go into the directory, which may exist and hold
+other files (e.g.\ a working directory): it is never removed. Each \code{<name>.den} is written under a
+temporary name and renamed when all arrays are written; \code{"w-"} refuses existing files of the
+arrays, \code{"w"} replaces just them. A zarr directory store with \code{"w"} is replaced as a whole.
+\end{note}
+
+\subsection{Python API}
+
+\begin{terminal}
+from denpy import TIFF
+plan = TIFF.validate("scan.json")        # or a dict; SpecError if anything does not fit
+print(plan.describe())
+report = TIFF.execute(plan, threads=16)  # FrameError if a frame does not match
+spec = TIFF.extend_spec(spec, "dark_correction.json")
+spec = TIFF.spec_from_files(files, output)   # one stack, one array
+\end{terminal}
+
+\code{execute} reads, computes and writes frames in worker threads (default a quarter of the CPUs,
+16 to 32): a thread reads the TIFF frames of frame $k$, applies the lambdas, converts and writes
+(zarr compresses in the same thread); a zip is written in parallel through ZARZS. Reductions are
+computed first, in dependency order. The report has, per array, the shape, dtype, null frames, TIFF
+bytes read, stored bytes, ratio to the raw size and time.
+
+\code{extend_spec(spec, extension)} adds \code{tiffstacks} (new names only), \code{virtualstacks}
+(added or replaced), \code{arrays} (added or replaced; \code{null} removes an array) and merges
+\code{defaults}; this is how a specification generated from metadata gets processing added.
+
+\subsection{convertTiffStack}\label{sec:cli}
+
+\begin{terminalsmall}
+convertTiffStack spec.json [-j THREADS] [--extend EXT.json ...] [--report r.json] [--dry-run]
+                 [--check-headers] [--max-memory GiB] [--write-spec full.json] [--verbose]
+convertTiffStack --files img_*.tif --zarr img.zar [--store zip|directory] [--zarr-format 2|3]
+                 [--compression htj2k --clevel 0] [--dtype float32 [--clip]] [--sort natural]
+                 [--mode w-|w] [--write-spec spec.json] [--dry-run]
+convertTiffStack --files img_*.tif --den img.den ...
+\end{terminalsmall}
+
+The second form builds a one-array specification from the file list (shell glob order, or natural
+order with \code{--sort natural}); \code{--write-spec} saves it as a starting point.
+\code{--check-headers} compares the TIFF header of every file with the specification before writing.
+The exit status is 1 with an \code{ERROR:} line for an invalid specification or a frame that does not
+match.
+
+\subsection{Performance}
+
+On a 128-CPU Maxwell node with 2500 frames of 5120$\times$3840 (91.5\,GB of TIFF files), reading
+the TIFF files takes about 120\,s; lossless htj2k into a zip takes about 140\,s, about the time of a
+directory store; more than 32 threads do not help. In the tests, 16 threads convert 120 frames of
+2048$^2$ to an htj2k zip five times faster than one thread; a dark corrected stack costs about 7\,\%
+more than the raw one.
+
+% ====================================================================
+\section{PETRA (legacy)}\label{sec:petra}
+
+\code{denpy.PETRA} parses PETRA III scan HDF5 files: \code{scanDataset}, \code{imageDataset},
+\code{getExperimentInfo}, \code{beamCurrentDataset}, \code{findInsertionEvents}. It is the legacy
+implementation, kept for the existing callers. All its functions read through one opening of the
+file and accept a file name or an open \code{h5py} file or group.
+
+The object oriented implementation is \code{lautools.PETRA}. It parses HDF5 files of all beamline
+layouts (P05 2021 and 2025, P07) and the \code{params} group of zarr stores into one canonical
+\code{ScanDescription}, implements every analysis once on it, and writes the description to zarr and
+to HDF5 in the 2025 layout. It has the same module functions, so a caller switches with the import:
+
+\begin{terminal}
+from lautools import PETRA     # instead of: from denpy import PETRA
+\end{terminal}
+
+Its API is described in the \emph{lautools API manual} (\code{manual/lautools_api_manual.pdf} of
+lautools), together with the conversion of PETRA III scans to zarr and DEN built on \code{denpy.TIFF}
+(\code{tiffScanDataToZarrForMicrotomography}). The lautools tests compare both implementations on
+synthetic scans and real beamline files.
+
+\end{document}

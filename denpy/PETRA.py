@@ -3,6 +3,16 @@
 """
 Processing of h5 format used to output Petra III data
 
+Legacy implementation, kept for the existing callers. The object oriented implementation is
+lautools.PETRA: HDF5 files of all beamline layouts and zarr stores parsed into one canonical
+ScanDescription, with the same module functions (scanDataset, imageDataset, getExperimentInfo,
+beamCurrentDataset, findInsertionEvents) and writers to zarr and HDF5. New code should use
+
+	from lautools import PETRA
+
+see the lautools API manual (manual/lautools_api_manual.pdf of lautools). The lautools tests compare
+both implementations on synthetic scans and real beamline files.
+
 @author: Vojtech Kulvait
 @date: 2022-2026
 """
@@ -11,7 +21,6 @@ import h5py
 import os
 import pandas as pd
 import numpy as np
-import sys
 from scipy.signal import find_peaks
 
 import logging

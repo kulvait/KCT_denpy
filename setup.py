@@ -14,9 +14,12 @@ setup(
     author='Vojtech Kulvait',
     author_email='vojtech.kulvait@hereon.de',
     # Needed to actually package something
-    packages=['denpy'],
+    packages=['denpy', 'denpy.scripts'],
     # Needed for dependencies
     install_requires=['numpy','pydicom'] + petra_requires,
+    # TIFF stacks to zarr / DEN (denpy.TIFF, convertTiffStack): pip install denpy[zarr]
+    extras_require={'zarr': ['zarr>=3', 'tifffile', 'imagecodecs', 'numcodecs']},
+    entry_points={'console_scripts': ['convertTiffStack=denpy.scripts.convertTiffStack:main']},
     # *strongly* suggested for sharing
     version=__version__,
     # The license can be anything you like

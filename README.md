@@ -69,6 +69,37 @@ Note that flipped order of the Numpy array dimensions allows user to use f = x[0
 - `DEN.getFrame(file_path, index)`: Reads a single frame (slice) from a DEN file and returns it as a NumPy array.
 - `DEN.writeFrame(file_path, index, frame, force=True)`: Writes a single frame (slice) to a DEN file.
 
+### ZAR, ZARZS, ZARPYRAMID
+Zarr helpers: `ZAR.get_compressor` returns zarr v2/v3 codecs by name (Blosc with bit shuffle, zstd,
+lz4, gzip and the image codecs htj2k, jpeg2k, jpegxl, avif, ...); `ZARZS.ZipStore` is a drop-in for
+`zarr.storage.ZipStore` that threads write and read in parallel (as fast as a directory store), with
+deletes and safe appends (`ZARZS.recover`); `ZARPYRAMID` writes multiscale pyramids with OME-NGFF
+metadata.
+
+### TIFF
+Stacks of TIFF files to zarr or DEN, described by a JSON specification: tiff stacks (which files,
+frame shape, dtype, known missing frames), virtual stacks computed with lambdas or reductions
+(e.g. a dark median and dark corrected projections) and the arrays to write. Everything is validated
+before writing; frames are read, computed, compressed and written in parallel. The reference of the
+format is [docs/TIFFSTACK_SPEC.md](docs/TIFFSTACK_SPEC.md).
+
+```bash
+pip install "denpy[zarr]"                     # zarr, tifffile, imagecodecs
+convertTiffStack scan.json --dry-run          # validate and print what would be written
+convertTiffStack scan.json -j 32 --report report.json
+convertTiffStack --files img_*.tif --zarr img.zar --compression htj2k --clevel 0
+```
+
+```python
+from denpy import TIFF
+report = TIFF.execute(TIFF.validate("scan.json"))
+```
+
+### PETRA (legacy)
+Parsing of PETRA III scan HDF5 files (`scanDataset`, `getExperimentInfo`, ...). Kept for the existing
+callers; the object oriented implementation is `lautools.PETRA` (`from lautools import PETRA`, same
+module functions), described in the lautools API manual.
+
 ### COR
 The denpy.COR module is used to detect the center of rotation in tomographic data from synchrotron sources.
 
@@ -139,6 +170,17 @@ Replace 'path/to/input.den' and 'path/to/output/dir' with the actual paths to yo
 ## Example scripts
 
 In the `scripts` directory, you can find example scripts and useful tools for working with the denpy package. These files are not part of the main package but can be helpful references.
+
+## Documentation
+
+The manual [manual/denpy_manual.pdf](manual/denpy_manual.pdf) describes DEN files, the zarr helpers
+and the TIFF stack conversion. Build it with `tectonic manual/denpy_manual.tex`.
+
+## Tests
+
+```bash
+python -m pytest denpy/
+```
 
 ## Licensing
 
