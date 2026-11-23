@@ -52,6 +52,20 @@ class TestGetCompressor(unittest.TestCase):
 		array[...] = data
 		return zarr.open_array(path, mode="r")[...]
 
+	def test_blosc_bitshuffle(self):
+		# zarr v2 and v3 use Blosc with bit shuffle (faster than byte shuffle, similar or better ratio)
+		for name in ("zstd", "blosc-zstd", "blosc-lz4", "blosc-blosclz", "blosc"):
+			with self.subTest(name=name):
+				self.assertEqual(ZAR.get_compressor(name, zarrv2=True, dtype=np.uint16).shuffle, 2)  # numcodecs BITSHUFFLE
+		for name in ("zstd", "blosc-zstd", "blosc-lz4", "blosc-lz4hc", "blosc-zlib", "blosc-blosclz", "blosc"):
+			with self.subTest(name=name):
+				try:
+					codec = ZAR.get_compressor(name, zarrv2=False, dtype=np.uint16)[-1]
+				except RuntimeError as e:  # Blosc built without this compressor
+					self.skipTest(str(e))
+				self.assertEqual(codec.shuffle.value, "bitshuffle")
+				self.assertEqual(codec.typesize, 2)
+
 	def test_general_codecs_lossless(self):
 		data = np.arange(4 * 32 * 48, dtype=np.float32).reshape(4, 32, 48)
 		for zarrv2, names in ((True, GENERAL_V2), (False, GENERAL_V3)):

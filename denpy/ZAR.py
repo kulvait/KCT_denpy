@@ -276,7 +276,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.blosclz,
 					clevel=clevel,
-					shuffle="shuffle",
+					shuffle="bitshuffle",  # as zarr v2: faster, similar or better ratio
 					typesize=itemsize,
 				)
 			)
@@ -286,7 +286,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.lz4,
 					clevel=clevel,
-					shuffle="shuffle",
+					shuffle="bitshuffle",  # as zarr v2: faster, similar or better ratio
 					typesize=itemsize,
 				)
 			)
@@ -296,7 +296,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.lz4hc,
 					clevel=clevel,
-					shuffle="shuffle",
+					shuffle="bitshuffle",  # as zarr v2: faster, similar or better ratio
 					typesize=itemsize,
 				)
 			)
@@ -306,7 +306,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.snappy,
 					clevel=clevel,
-					shuffle="shuffle",
+					shuffle="bitshuffle",  # as zarr v2: faster, similar or better ratio
 					typesize=itemsize,
 				)
 			)
@@ -316,7 +316,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.zlib,
 					clevel=clevel,
-					shuffle="shuffle",
+					shuffle="bitshuffle",  # as zarr v2: faster, similar or better ratio
 					typesize=itemsize,
 				)
 			)
@@ -326,7 +326,7 @@ def get_compressor(name, clevel=5, zarrv2=False, dtype=None, **codec_kwargs):
 				codecs.BloscCodec(
 					cname=codecs.BloscCname.zstd,
 					clevel=int(clevel),
-					shuffle="shuffle",
+					shuffle="bitshuffle",  # as zarr v2: faster, similar or better ratio
 					typesize=itemsize,
 				)
 			)
