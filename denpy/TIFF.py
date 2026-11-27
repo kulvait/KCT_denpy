@@ -369,7 +369,7 @@ class TiffStack(Stack):
 			raise FrameError(f"tiffstacks.{self.name}[{k}]: {path} page {page} is {data.dtype} {list(data.shape)}, "
 							 f"the spec says {self.dtype} {list(self.frame_shape)}")
 		if stats is not None:
-			stats.add_input(os.path.getsize(path) if page == 0 else data.nbytes)
+			stats.add_input(data.nbytes)
 		return data
 
 	def provenance(self):

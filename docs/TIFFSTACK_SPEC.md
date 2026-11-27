@@ -323,8 +323,9 @@ denpy has no measurement specific code here: the specs of tomography scans are b
 
 Execution returns (and with `--report out.json` writes):
 
-- per array: `shape`, `dtype`, `frames`, `null_frames`, `tiff_frames_read`, `input_bytes` (TIFF file
-  sizes read), `stored_bytes`, `ratio_to_raw` (stored / uncompressed array), `seconds`
+- per array: `shape`, `dtype`, `frames`, `null_frames`, `tiff_frames_read`, `input_bytes` (pixel
+  bytes of the TIFF frames read, without file headers), `stored_bytes`, `ratio_to_raw` (stored /
+  uncompressed array), `seconds`
 - per reduction: `reduce`, `frames`, `input_bytes`, `seconds`
 - `threads`, total `seconds`
 

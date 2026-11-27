@@ -173,6 +173,11 @@ class TestTimestamps(unittest.TestCase):
 			self.assertTrue(any(PETRA.TIMESTAMP_FLAT_BLOCKS in m for m in logged.output))
 			df = PETRA.scanDataset(path, fixKnownTimestampIssues=False)
 			np.testing.assert_array_equal(df.index.to_numpy().astype(np.int64) - T0, [0, 100, 101, 201, 301, 1000, 1100, 1200, 1300, 1301])
+			# getExperimentInfo: end time and duration from the corrected times
+			info = PETRA.getExperimentInfo(path)
+			self.assertAlmostEqual(info["scan_duration_sec"], 1.65)
+			self.assertAlmostEqual(info["sample_duration_sec"], 0.3)
+			self.assertAlmostEqual(PETRA.getExperimentInfo(path, fixKnownTimestampIssues=False)["scan_duration_sec"], 1.301)
 
 
 class TestPETRA(unittest.TestCase):
