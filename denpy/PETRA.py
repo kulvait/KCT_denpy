@@ -13,6 +13,9 @@ beamCurrentDataset, findInsertionEvents) and writers to zarr and HDF5. New code 
 see the lautools API manual (manual/lautools_api_manual.pdf of lautools). The lautools tests compare
 both implementations on synthetic scans and real beamline files.
 
+Layout: API (module functions: scan analyses, nanotomography, timestamps, reading HDF5 values), then the
+helpers grouped by the functions using them.
+
 @author: Vojtech Kulvait
 @date: 2022-2026
 """
@@ -38,32 +41,285 @@ log.addHandler(ch)
 log.propagate = False # Prevent log messages from being propagated to the root logger
 
 
-class BeamCurrentError(ValueError):
-	"""The beam current of a scan file is missing or unusable (entry/hardware/beam_current/current)."""
+# ================================================================================================
+# API: module functions
+# The source of these functions is an HDF5 file (name or h5py object).
+# ================================================================================================
 
 
-@contextlib.contextmanager
-def _open_h5(h5file):
-	"""The HDF5 file of a file name (opened and closed here), or the file of an open h5py.File or
-	h5py.Group (left open). All functions of this module read through it, so a function opens the
-	file once, also for the functions it calls."""
-	if isinstance(h5file, (str, os.PathLike)):
-		with h5py.File(h5file, "r") as h5:
-			yield h5
+# ---------------- scan analyses
+
+
+def getExperimentInfo(h5file, overrideMagnification=None, fixKnownTimestampIssues=True):
+	"""Experiment info of a scan; times and durations from the frame times corrected as in
+	scanDataset (see fix_timestamps)."""
+	with _open_h5(h5file) as h5:
+		info = {}
+		info["h5"] = os.path.realpath(h5.filename)
+		info["h5_name"] = os.path.basename(info["h5"])
+		experimentString = extractStringEntry(h5, 'entry/beamline/experiment')
+		if experimentString is not None:
+			info["experiment"] = experimentString
+		beamlineString = extractStringEntry(h5, 'entry/beamline/name')
+		if beamlineString is not None:
+			info["beamline"] = beamlineString
+		# Extract start and end times from the image_file dataset if available
+		def read(name):
+			return np.asarray(h5[name][:]) if name in h5 else None
+		image_key = read('entry/scan/data/image_key/value')
+		image_key_time = read('entry/scan/data/image_key/time')
+		image_file_time, image_key_time_fixed = corrected_frame_times(read('entry/scan/data/image_file/time'),
+																	  image_key_time, image_key, fixKnownTimestampIssues)
+		if image_file_time is not None:
+			image_file_time = pd.to_datetime(image_file_time, unit="ms")
+			if len(image_file_time) > 0:
+				start = image_file_time.min()
+				end = image_file_time.max()
+				info["start_date_time"] = start.strftime("%d.%m.%Y %H:%M:%S")
+				info["end_date_time"] = end.strftime("%d.%m.%Y %H:%M:%S")
+				info["scan_frame_count"] = len(image_file_time)
+				info["scan_duration_sec"] = (end - start).total_seconds()
+				info["scan_fps"] = len(image_file_time) / info["scan_duration_sec"] if info["scan_duration_sec"] > 0 else None
+		# Sample frames (image_key 0) from the image_key log, its time and value have the same length
+		if image_key is not None and image_key_time is not None:
+			if len(image_key) != len(image_key_time):
+				log.warning("image_key has %d values but %d times in %s; sample frame statistics skipped." % (len(image_key), len(image_key_time), info["h5"]))
+			else:
+				image_times = pd.to_datetime(image_key_time_fixed[image_key == 0], unit="ms")
+				if len(image_times) > 0:
+					info["sample_frame_count"] = len(image_times)
+					info["sample_duration_sec"] = (image_times.max() - image_times.min()).total_seconds()
+					info["sample_fps"] = len(image_times) / info["sample_duration_sec"] if info["sample_duration_sec"] > 0 else None
+		setup = {}
+		camera = {}
+		if 'entry/scan/setup' in h5:
+			# Iterate over all items in the setup group
+			setup = read_group_scalars(h5['entry/scan/setup'])
+			for key in ("pos_o_ccd_dist", "o_ccd_dist"):
+				distance = _to_finite_float(setup.get(key))
+				if distance is not None:
+					info["propagation_distance_mm"] = round(distance, 0)
+					break
+			for key in ("pos_p05_energy", "pos_p07_energy", "p05_energy", "p07_energy"):
+				energy = _to_finite_float(setup.get(key))
+				if energy is not None:
+					info["energy_keV"] = round(energy / 1000, 3)
+					break
+		else:
+			log.warning("The path 'entry/scan/setup' does not exist in %s." % info["h5"])
+		camera_group = _find_camera_group(h5)
+		if camera_group is None:
+			log.warning("Neither 'entry/hardware/camera' nor 'entry/hardware/camera1' exists in %s." % info["h5"])
+		else:
+			camera = read_group_scalars(camera_group)
+			values = _read_camera_values(camera_group, camera, overrideMagnification)
+			if overrideMagnification is not None:
+				camera["magnification"] = overrideMagnification
+			elif values["magnification"] is not None:
+				camera["magnification"] = values["magnification"]
+			# Names of older files, as the newer ones
+			for key in ("pixelsize", "sensorsize_x", "sensorsize_y", "roi_width", "roi_height"):
+				if values[key] is not None:
+					camera[key] = values[key]
+			# Without a ROI, the whole sensor
+			for roi, sensor in (("roi_width", "sensorsize_x"), ("roi_height", "sensorsize_y")):
+				if values[roi] is None and values[sensor] is not None:
+					camera[roi] = values[sensor]
+			if values["magnification"] is not None and values["pixelsize"] is not None:
+				info["pix_size"] = values["pixelsize"] / values["magnification"]
+				width = values["roi_width"] if values["roi_width"] is not None else values["sensorsize_x"]
+				height = values["roi_height"] if values["roi_height"] is not None else values["sensorsize_y"]
+				if width is not None:
+					info["field_of_view_x"] = info["pix_size"] * width
+				if height is not None:
+					info["field_of_view_y"] = info["pix_size"] * height
+			else:
+				log.warning("No usable camera pixelsize and magnification in %s; pix_size not set." % info["h5"])
+		# Compute fresnel number if propagation distance, energy, and pixel size are available
+		if "propagation_distance_mm" in info and "energy_keV" in info and "pix_size" in info and  info["energy_keV"] > 0 and info["propagation_distance_mm"] > 0 and info["pix_size"] > 0:
+			wavelength_m = 1.2398419843320026e-9 / info["energy_keV"]  # Convert keV to eV for wavelength calculation
+			propagation_distance_m = info["propagation_distance_mm"] / 1000.0  # Convert mm to m
+			pix_size_m = info["pix_size"] / 1000.0	# Convert mm to m
+			fresnel_number = (pix_size_m ** 2) / (wavelength_m * propagation_distance_m)
+			info["fresnel_number"] = fresnel_number
+		info["setup"] = setup
+		info["camera"] = camera
+		return info
+
+
+def getBasicDatasetInfo(h5file):
+	with _open_h5(h5file) as h5:
+		data = h5["entry/scan/data"]
+		key_time = data["image_key/time"]
+		key_value = data["image_key/value"]
+		file_time = data["image_file/time"]
+		file_value = data["image_file/value"]
+		if h5py.__version__.startswith("3"):
+			file_value = file_value.asstr()[:]
+		# Check that all four arrays have the same length
+		lengths = [len(key_time), len(key_value), len(file_time), len(file_value)]
+		if len(set(lengths)) != 1:
+			raise ValueError(f"Length mismatch: key_time={len(key_time)}, key_value={len(key_value)}, "
+							 f"file_time={len(file_time)}, file_value={len(file_value)}")
+		if not np.array_equal(key_time, file_time):
+			raise ValueError("Time arrays for image_key and image_file do not match.")
+		# Create a DataFrame
+		df = pd.DataFrame({"time": key_time, "image_key": key_value, "image_file": file_value})
+		# Check for duplicate times
+		duplicates = df[df.duplicated(subset=['time'], keep=False)].copy()
+		if not duplicates.empty:
+			# Save original indices
+			duplicates["orig_index"] = duplicates.index
+			n_duplicated_times = duplicates['time'].nunique()
+			abs_h5file = os.path.realpath(h5.filename)
+			log.warning("There is %d duplicated entries in %d distinct times in file %s." %
+				  (len(duplicates), n_duplicated_times, abs_h5file))
+			# Build key sets per time
+			times_to_duplicates = duplicates.groupby('time')['image_key'].apply(list).to_dict()
+			duplicates = duplicates.sort_values(by=['time', 'image_key'])
+			duplicates["key_set"] = duplicates["time"].map(lambda t: tuple(sorted(set(times_to_duplicates[t]))))
+			# Report per key_set
+			for key_set, group in duplicates.groupby('key_set'):
+				first_time = group['time'].iloc[0]
+				affected = group[group['time'] == first_time][['image_file', 'orig_index']]
+				formatted_key_set = ", ".join(str(k) for k in key_set)
+				# Format as "file (id=index)"
+				affected_str_list = [f"{f} (id={i})" for f, i in zip(affected['image_file'], affected['orig_index'])]
+				affected_str = ", ".join(affected_str_list)
+				log.warning(f"key_set=[{formatted_key_set}], n_times={group['time'].nunique()}, "
+					  f"first_time={first_time}, affected_files={affected_str}")
+		return df
+
+
+#Note that timeOffsetSec describes the offset to be applied to the current measurements to be in sync with the frame time data
+def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None, fixKnownTimestampIssues=True):
+	"""DataFrame of the frames of a scan: time, image_key, image_file and the logs of entry/scan/data.
+
+	With includeCurrent, the column current holds the beam current interpolated at the frame times
+	(constant before the first and after the last reading); raises BeamCurrentError if the file has
+	no usable beam current.
+	"""
+	if timeOffsetSec is None:
+		timeOffsetSec = 0.0
+	with _open_h5(h5file) as h5:
+		abs_h5file = os.path.realpath(h5.filename)
+		# Create basic dataset info based on image_key and image_file
+		df = getBasicDatasetInfo(h5)
+		data = h5["entry/scan/data"]
+		labels = list(data.keys())
+		if len(labels) < 1:
+			raise ValueError("Error: labels count is %d!" % (len(labels)))
+		# Insert labels except image_key and image_file
+		for lab in labels:
+			if lab not in ["image_key", "image_file"]:
+				if not isinstance(data[lab], h5py.Group):
+					log.warning(f"Label '{lab}' not inserted into DataFrame from file {abs_h5file}: not a group with time and value.")
+					continue
+				try:
+					df = insert_label(df.copy(deep=True), data, lab, key_col="image_key")  # Test on a copy to avoid partial insertions
+				except ValueError as ve:
+					log.warning(f"Label '{lab}' not inserted into DataFrame from file {abs_h5file}: {ve}")
+		# Normalize timestamps to ensure strictly increasing index
+		time_values = df["time"].values.astype(np.int64)
+		if not all(np.diff(time_values) > 0):
+			normalized_time, issues = fix_timestamps(time_values, df["image_key"].to_numpy(), fixKnownTimestampIssues)
+			for text in timestamp_issue_messages(issues, fixKnownTimestampIssues):
+				log.warning("%s (%s)" % (text, abs_h5file))
+			df["time"] = normalized_time
+		# Set index to time for further processing
+		df.index = df["time"].values
+		# Convert time column to datetime in-place
+		df["time"] = pd.to_datetime(df["time"].astype(np.int64), unit="ms")
+		if includeCurrent:
+			currentFrame = beamCurrentDataset(h5, timeOffsetSec=timeOffsetSec)
+			if currentFrame.empty:
+				raise BeamCurrentError(f"No beam current readings in {abs_h5file}, can not include the current.")
+			current_times = currentFrame.index.to_numpy().astype(np.float64)
+			frame_times = df.index.to_numpy().astype(np.float64)
+			outside = int(np.sum(frame_times < current_times[0]) + np.sum(frame_times > current_times[-1]))
+			if outside > 0:
+				log.warning("%d of %d frames of %s are outside the beam current readings; the first/last reading is used for them." % (outside, len(df), abs_h5file))
+			# Linear interpolation between the readings, constant outside of them
+			df["current"] = np.interp(frame_times, current_times, currentFrame["current"].to_numpy(dtype=np.float64))
+		df = df.sort_values("time", ascending=True)
+		return df
+
+
+def imageDataset(h5file, image_key=0, includeCurrent=True, includePixelShift=False, overrideMagnification=None,
+				 fixKnownTimestampIssues=True):
+	with _open_h5(h5file) as h5:
+		abs_h5file = os.path.realpath(h5.filename)
+		df = scanDataset(h5, includeCurrent, fixKnownTimestampIssues=fixKnownTimestampIssues)
+		df = df.loc[df["image_key"] == image_key]
+		df = df.assign(frame_ind=np.arange(len(df)))
+		if includePixelShift:
+			if "s_stage_x" not in df.columns:
+				raise ValueError("No s_stage_x log in %s, can not compute the pixel shift." % abs_h5file)
+			camera_group = _find_camera_group(h5)
+			if camera_group is None:
+				raise ValueError("There is no entry/hardware/camera or entry/hardware/camera1 entry in %s." % abs_h5file)
+			values = _read_camera_values(camera_group, read_group_scalars(camera_group), overrideMagnification)
+			if values["pixelsize"] is None or values["magnification"] is None:
+				raise ValueError("No usable camera pixelsize and magnification in %s, can not compute the pixel shift." % abs_h5file)
+			pix_size = values["pixelsize"] / values["magnification"]
+			# zeropos = df["s_stage_x"].iloc[0]#Previous
+			zeropos = 0.5 * (df["s_stage_x"].max() + df["s_stage_x"].min())
+			# print("p0 =%f min=%f max=%f zeropos=%f pix_size=%f"%(df["s_stage_x"].iloc[0], df["s_stage_x"].min(), df["s_stage_x"].max(), zeropos, pix_size))
+			pixShifts = (df["s_stage_x"] - zeropos) / pix_size
+			df = df.assign(pixel_shift=pixShifts)
+		return df
+
+
+# This function extracts beam current readings from PETRA III scan HDF5 files.
+# Creates a DataFrame with time and current values in mA.
+# These readings are used to relate frame time data with synchrotron beam current.
+# The index is based on UNIX timestamps in milliseconds, allowing accurate interpolation.
+# `timeOffsetSec` is applied to synchronize measurements with external frame time references.
+def beamCurrentDataset(h5file, timeOffsetSec=None):
+	if timeOffsetSec is None:
+		timestampadjustment = np.int64(0)
 	else:
-		yield h5file.file
-
-
-def _scalar_number(value):
-	"""value as a finite float if it is a single number (not bool), else None."""
-	if isinstance(value, np.ndarray) and value.size == 1:
-		value = value.reshape(()).item()
-	if isinstance(value, np.generic):
-		value = value.item()
-	if isinstance(value, bool) or not isinstance(value, (int, float)):
-		return None
-	value = float(value)
-	return value if np.isfinite(value) else None
+		timestampadjustment = np.int64(timeOffsetSec * 1000)
+	with _open_h5(h5file) as h5:
+		filename = os.path.realpath(h5.filename)
+		beam_current_path = "entry/hardware/beam_current/current"
+		for part in ("time", "value"):
+			if f"{beam_current_path}/{part}" not in h5:
+				raise BeamCurrentError(f"No beam current in {filename}: '{beam_current_path}/{part}' does not exist.")
+		# Raw timestamps (milliseconds since epoch) and beam current values (mA)
+		ID = np.asarray(h5[f"{beam_current_path}/time"][()]).astype(np.uint64).ravel()
+		value = np.asarray(h5[f"{beam_current_path}/value"][()], dtype=np.float64).ravel()
+		if len(ID) != len(value):
+			raise BeamCurrentError(f"Beam current in {filename} has {len(ID)} timestamps but {len(value)} values.")
+		# Readings without a valid value carry no information
+		valid = np.isfinite(value)
+		if not valid.all():
+			log.warning("Ignoring %d of %d beam current readings without a finite value in %s." % ((~valid).sum(), len(value), filename))
+			ID, value = ID[valid], value[valid]
+		# DataFrame with timestamps as the index
+		df = pd.DataFrame({"time": pd.to_datetime(ID.astype(np.int64), unit="ms"), "current": value}, index=ID)
+		# Remove duplicate timestamps (keep first occurrence only)
+		# This is important to avoid issues in interpolation or reindexing
+		# see https://stackoverflow.com/questions/13035764/remove-pandas-rows-with-duplicate-indices
+		df = df[~df.index.duplicated(keep='first')]
+		# Remove any rows where the index (timestamp) is exactly zero — likely invalid
+		# Remove zero index https://stackoverflow.com/questions/13851535/how-to-delete-rows-from-a-pandas-dataframe-based-on-a-conditional-expression
+		df.drop(df[df.index == 0].index, inplace=True)
+		# Sort by index (timestamp) to ensure chronological order
+		df.sort_index(inplace=True)
+		# Apply a time offset to the index (timestamp) to synchronize with external data
+		if timestampadjustment != 0:
+			# Apply the offset using signed arithmetic, independently of pandas/NumPy mixed signed/unsigned behavior.
+			timestamps = df.index.to_numpy(dtype=np.int64)
+			adjusted = timestamps + timestampadjustment
+			# Check if uint64 Unix-millisecond index can be preserved
+			if np.any(adjusted < 0):
+				raise ValueError(f"Time offset {timeOffsetSec}s seconds results in negative timestamps. Invalid uint64 index.")
+			# Adjustment in milliseconds
+			df.index = pd.Index(adjusted.astype(np.uint64), name=df.index.name)
+			# Update the time column to reflect the adjusted timestamps
+			df["time"] = pd.to_datetime(df.index, unit="ms")
+		return df
 
 
 def findInsertionEvents(
@@ -162,585 +418,12 @@ def findInsertionEvents(
 	return events
 
 
-# This function extracts beam current readings from PETRA III scan HDF5 files.
-# Creates a DataFrame with time and current values in mA.
-# These readings are used to relate frame time data with synchrotron beam current.
-# The index is based on UNIX timestamps in milliseconds, allowing accurate interpolation.
-# `timeOffsetSec` is applied to synchronize measurements with external frame time references.
-def beamCurrentDataset(h5file, timeOffsetSec=None):
-	if timeOffsetSec is None:
-		timestampadjustment = np.int64(0)
-	else:
-		timestampadjustment = np.int64(timeOffsetSec * 1000)
-	with _open_h5(h5file) as h5:
-		filename = os.path.realpath(h5.filename)
-		beam_current_path = "entry/hardware/beam_current/current"
-		for part in ("time", "value"):
-			if f"{beam_current_path}/{part}" not in h5:
-				raise BeamCurrentError(f"No beam current in {filename}: '{beam_current_path}/{part}' does not exist.")
-		# Raw timestamps (milliseconds since epoch) and beam current values (mA)
-		ID = np.asarray(h5[f"{beam_current_path}/time"][()]).astype(np.uint64).ravel()
-		value = np.asarray(h5[f"{beam_current_path}/value"][()], dtype=np.float64).ravel()
-		if len(ID) != len(value):
-			raise BeamCurrentError(f"Beam current in {filename} has {len(ID)} timestamps but {len(value)} values.")
-		# Readings without a valid value carry no information
-		valid = np.isfinite(value)
-		if not valid.all():
-			log.warning("Ignoring %d of %d beam current readings without a finite value in %s." % ((~valid).sum(), len(value), filename))
-			ID, value = ID[valid], value[valid]
-		# DataFrame with timestamps as the index
-		df = pd.DataFrame({"time": pd.to_datetime(ID.astype(np.int64), unit="ms"), "current": value}, index=ID)
-		# Remove duplicate timestamps (keep first occurrence only)
-		# This is important to avoid issues in interpolation or reindexing
-		# see https://stackoverflow.com/questions/13035764/remove-pandas-rows-with-duplicate-indices
-		df = df[~df.index.duplicated(keep='first')]
-		# Remove any rows where the index (timestamp) is exactly zero — likely invalid
-		# Remove zero index https://stackoverflow.com/questions/13851535/how-to-delete-rows-from-a-pandas-dataframe-based-on-a-conditional-expression
-		df.drop(df[df.index == 0].index, inplace=True)
-		# Sort by index (timestamp) to ensure chronological order
-		df.sort_index(inplace=True)
-		# Apply a time offset to the index (timestamp) to synchronize with external data
-		if timestampadjustment != 0:
-			# Apply the offset using signed arithmetic, independently of pandas/NumPy mixed signed/unsigned behavior.
-			timestamps = df.index.to_numpy(dtype=np.int64)
-			adjusted = timestamps + timestampadjustment
-			# Check if uint64 Unix-millisecond index can be preserved
-			if np.any(adjusted < 0):
-				raise ValueError(f"Time offset {timeOffsetSec}s seconds results in negative timestamps. Invalid uint64 index.")
-			# Adjustment in milliseconds
-			df.index = pd.Index(adjusted.astype(np.uint64), name=df.index.name)
-			# Update the time column to reflect the adjusted timestamps
-			df["time"] = pd.to_datetime(df.index, unit="ms")
-		return df
+class BeamCurrentError(ValueError):
+	"""The beam current of a scan file is missing or unusable (entry/hardware/beam_current/current)."""
 
 
-def read_scalar_h5(item):
-	"""
-	Read a scalar value from an h5py dataset robustly.
+# ---------------- nanotomography: LogScan.log and a TIFF directory
 
-	Handles:
-	  - shape ()		   -> 0-d array / numpy scalar
-	  - shape (1,)		   -> 1-element array
-	  - bytes / np.bytes_  -> decoded to str (utf-8, replace on error)
-	  - numpy scalars	   -> converted to native Python types
-	Returns None for empty datasets.
-	"""
-	val = item[()]
-	# Unwrap 1-element arrays; keep 0-d as-is
-	if isinstance(val, np.ndarray):
-		if val.shape == (1,):
-			val = val[0]
-		elif val.shape == ():
-			val = val.item()
-		elif val.size == 0:
-			return None
-		# else: leave as ndarray (caller may want the array)
-	# numpy scalar -> Python scalar (np.bytes_.item() returns bytes, handled below)
-	if isinstance(val, np.generic):
-		val = val.item()
-	# Decode bytes to str
-	if isinstance(val, (bytes, bytearray)):
-		try:
-			val = val.decode("utf-8")
-		except UnicodeDecodeError:
-			val = val.decode("utf-8", errors="replace")
-	return val
-
-def _attribute_value(value):
-	"""An HDF5 attribute as a python value: numpy to python, bytes to str, arrays to lists; one-element
-	sequences collapse to their element (older files store attributes as (1,) object arrays)."""
-	if isinstance(value, np.ndarray):
-		return _attribute_value(value.tolist())
-	if isinstance(value, np.generic):
-		return _attribute_value(value.item())
-	if isinstance(value, (bytes, bytearray)):
-		try:
-			return value.decode("utf-8")
-		except UnicodeDecodeError:
-			return value.decode("utf-8", errors="replace")
-	if isinstance(value, (list, tuple)):
-		if len(value) == 1:
-			return _attribute_value(value[0])
-		return [_attribute_value(v) for v in value]
-	return value
-
-
-def _attribute_of_parent(h5, path):
-	"""(True, value) if path names an attribute of its parent group (other than NX_class), else (False, None)."""
-	parent, _, name = path.rpartition("/")
-	if name != "NX_class" and (parent == "" or isinstance(h5.get(parent), h5py.Group)):
-		group = h5[parent] if parent else h5
-		if name in group.attrs:
-			return True, _attribute_value(group.attrs[name])
-	return False, None
-
-
-#Sometimes values as entry/beamline/experiment are stored as () shape but sometimes as (1,) shape,
-#or as an attribute of the group; this function extracts the string value from any of these.
-def extractStringEntry(h5, path):
-	is_attribute, value = _attribute_of_parent(h5, path)
-	if path in h5 or is_attribute:
-		if not is_attribute:
-			value = read_scalar_h5(h5[path])
-		if value is None:
-			log.warning("The path '%s' is empty in %s." % (path, os.path.realpath(h5.filename)))
-			return None
-		if isinstance(value, str):
-			return value
-		else:
-			return str(value)
-	else:
-		log.warning("The path '%s' does not exist in %s." % (path, os.path.realpath(h5.filename)))
-		return None
-
-def read_group_scalars(group):
-	"""The datasets (read_scalar_h5) and the attributes other than NX_class of a group as a dict; an
-	attribute wins over a dataset of the same name. Subgroups are skipped."""
-	out = {}
-	for key, item in group.items():
-		if isinstance(item, h5py.Dataset):
-			out[key] = read_scalar_h5(item)
-	out.update({key: _attribute_value(value) for key, value in group.attrs.items() if key != "NX_class"})
-	return out
-
-def getExperimentInfo(h5file, overrideMagnification=None, fixKnownTimestampIssues=True):
-	"""Experiment info of a scan; times and durations from the frame times corrected as in
-	scanDataset (see fix_timestamps)."""
-	with _open_h5(h5file) as h5:
-		return _experimentInfo(h5, h5.filename, overrideMagnification, fixKnownTimestampIssues)
-
-
-def _experimentInfo(h5, h5file, overrideMagnification=None, fixKnownTimestampIssues=True):
-	info = {}
-	info["h5"] = os.path.realpath(h5file)
-	info["h5_name"] = os.path.basename(info["h5"])
-	experimentString = extractStringEntry(h5, 'entry/beamline/experiment')
-	if experimentString is not None:
-		info["experiment"] = experimentString
-	beamlineString = extractStringEntry(h5, 'entry/beamline/name')
-	if beamlineString is not None:
-		info["beamline"] = beamlineString
-	# Extract start and end times from the image_file dataset if available
-	def read(name):
-		return np.asarray(h5[name][:]) if name in h5 else None
-	image_key = read('entry/scan/data/image_key/value')
-	image_key_time = read('entry/scan/data/image_key/time')
-	image_file_time, image_key_time_fixed = corrected_frame_times(read('entry/scan/data/image_file/time'),
-																  image_key_time, image_key, fixKnownTimestampIssues)
-	if image_file_time is not None:
-		image_file_time = pd.to_datetime(image_file_time, unit="ms")
-		if len(image_file_time) > 0:
-			start = image_file_time.min()
-			end = image_file_time.max()
-			info["start_date_time"] = start.strftime("%d.%m.%Y %H:%M:%S")
-			info["end_date_time"] = end.strftime("%d.%m.%Y %H:%M:%S")
-			info["scan_frame_count"] = len(image_file_time)
-			info["scan_duration_sec"] = (end - start).total_seconds()
-			info["scan_fps"] = len(image_file_time) / info["scan_duration_sec"] if info["scan_duration_sec"] > 0 else None
-	# Sample frames (image_key 0) from the image_key log, its time and value have the same length
-	if image_key is not None and image_key_time is not None:
-		if len(image_key) != len(image_key_time):
-			log.warning("image_key has %d values but %d times in %s; sample frame statistics skipped." % (len(image_key), len(image_key_time), info["h5"]))
-		else:
-			image_times = pd.to_datetime(image_key_time_fixed[image_key == 0], unit="ms")
-			if len(image_times) > 0:
-				info["sample_frame_count"] = len(image_times)
-				info["sample_duration_sec"] = (image_times.max() - image_times.min()).total_seconds()
-				info["sample_fps"] = len(image_times) / info["sample_duration_sec"] if info["sample_duration_sec"] > 0 else None
-	setup = {}
-	camera = {}
-	if 'entry/scan/setup' in h5:
-		# Iterate over all items in the setup group
-		setup = read_group_scalars(h5['entry/scan/setup'])
-		for key in ("pos_o_ccd_dist", "o_ccd_dist"):
-			distance = _scalar_number(setup.get(key))
-			if distance is not None:
-				info["propagation_distance_mm"] = round(distance, 0)
-				break
-		for key in ("pos_p05_energy", "pos_p07_energy", "p05_energy", "p07_energy"):
-			energy = _scalar_number(setup.get(key))
-			if energy is not None:
-				info["energy_keV"] = round(energy / 1000, 3)
-				break
-	else:
-		log.warning("The path 'entry/scan/setup' does not exist in %s." % info["h5"])
-	camera_group = _camera_group(h5)
-	if camera_group is None:
-		log.warning("Neither 'entry/hardware/camera' nor 'entry/hardware/camera1' exists in %s." % info["h5"])
-	else:
-		camera = read_group_scalars(camera_group)
-		values = _camera_values(camera_group, camera, overrideMagnification)
-		if overrideMagnification is not None:
-			camera["magnification"] = overrideMagnification
-		elif values["magnification"] is not None:
-			camera["magnification"] = values["magnification"]
-		# Names of older files, as the newer ones
-		for key in ("pixelsize", "sensorsize_x", "sensorsize_y", "roi_width", "roi_height"):
-			if values[key] is not None:
-				camera[key] = values[key]
-		# Without a ROI, the whole sensor
-		for roi, sensor in (("roi_width", "sensorsize_x"), ("roi_height", "sensorsize_y")):
-			if values[roi] is None and values[sensor] is not None:
-				camera[roi] = values[sensor]
-		if values["magnification"] is not None and values["pixelsize"] is not None:
-			info["pix_size"] = values["pixelsize"] / values["magnification"]
-			width = values["roi_width"] if values["roi_width"] is not None else values["sensorsize_x"]
-			height = values["roi_height"] if values["roi_height"] is not None else values["sensorsize_y"]
-			if width is not None:
-				info["field_of_view_x"] = info["pix_size"] * width
-			if height is not None:
-				info["field_of_view_y"] = info["pix_size"] * height
-		else:
-			log.warning("No usable camera pixelsize and magnification in %s; pix_size not set." % info["h5"])
-	# Compute fresnel number if propagation distance, energy, and pixel size are available
-	if "propagation_distance_mm" in info and "energy_keV" in info and "pix_size" in info and  info["energy_keV"] > 0 and info["propagation_distance_mm"] > 0 and info["pix_size"] > 0:
-		wavelength_m = 1.2398419843320026e-9 / info["energy_keV"]  # Convert keV to eV for wavelength calculation
-		propagation_distance_m = info["propagation_distance_mm"] / 1000.0  # Convert mm to m
-		pix_size_m = info["pix_size"] / 1000.0	# Convert mm to m
-		fresnel_number = (pix_size_m ** 2) / (wavelength_m * propagation_distance_m)
-		info["fresnel_number"] = fresnel_number
-	info["setup"] = setup
-	info["camera"] = camera
-	return info
-
-
-def _camera_group(h5):
-	"""entry/hardware/camera, else entry/hardware/camera1, else None."""
-	for path in ("entry/hardware/camera", "entry/hardware/camera1"):
-		if path in h5:
-			return h5[path]
-	return None
-
-
-def _camera_values(camera_group, camera, overrideMagnification=None):
-	"""Camera numbers under the names of the newer files, None where missing, empty or not a number.
-
-	Older names: px_size/pixel_size, senzor_xsize/senzor_ysize, roi_xsize/roi_ysize. The
-	magnification is taken from overrideMagnification, the camera group or its calibration subgroup;
-	a magnification of 0 counts as missing.
-	"""
-	def first(*keys):
-		for key in keys:
-			value = _scalar_number(camera.get(key))
-			if value is not None:
-				return value
-		return None
-	values = {
-		"pixelsize": first("pixel_size", "px_size", "pixelsize"),
-		"sensorsize_x": first("senzor_xsize", "sensorsize_x"),
-		"sensorsize_y": first("senzor_ysize", "sensorsize_y"),
-		"roi_width": first("roi_xsize", "roi_width"),
-		"roi_height": first("roi_ysize", "roi_height"),
-	}
-	magnification = _scalar_number(overrideMagnification) if overrideMagnification is not None else first("magnification")
-	if magnification is None and overrideMagnification is None and isinstance(camera_group.get("calibration"), h5py.Group):
-		magnification = _scalar_number(read_group_scalars(camera_group["calibration"]).get("magnification"))
-	values["magnification"] = magnification if magnification else None
-	return values
-
-
-TIMESTAMP_FLAT_BLOCKS = ("Timestamp issue: found known structure of wrongly positioned flat field blocks within "
-						 "acquisition")
-TIMESTAMP_REPEATED = "Timestamp issue: found repeated value with %d items offset from original"
-TIMESTAMP_UNKNOWN = "Timestamp issue: unknown issue encountered proceeding with default correction"
-
-
-def fix_timestamps(old_ts, keys=None, fixKnownTimestampIssues=True):
-	"""(strictly increasing timestamps, issues) for frames logged with timestamps that repeat or drop
-	back; the frames keep their order. issues: [(kind, (first row, last row), detail)] with kind
-	"flat_blocks", "repeated" or "unknown"; timestamp_issue_messages() makes the log lines.
-
-	Default correction: from a zero or negative step on, the frames are moved 1 ms behind the frame
-	before them keeping their steps, until an original time fits again (is later than the corrected
-	time before it); so only frames with a wrong time are re-timed. Each such run is classified:
-	- flat_blocks (known structure, needs keys = image_key): the run is exactly a flat field block
-	  (key 1) whose first time is the first time of the block before it (seen in P05/P07 files: the
-	  flats after the darks and the flats after the projections); fixed by centring it between the
-	  frames before and after it, or at the end of the scan by putting it after the frame before it
-	  with the pause of the transition into that frame's block (moving the object out as long as in). Checked against scans with correct timestamps: the darks -> flats
-	  pause is a bit shorter than the flats -> projections pause, and the projections -> flats pause
-	  is about their mean, which is what centring the first flat block and reusing its pause gives.
-	  The P07 software was fixed around 05/2026; newer P07 datasets should not be affected;
-	- repeated (known): a single frame with exactly the time of the frame n rows before it, the frames
-	  around it on time (seen with n = 20); fixed by putting it halfway between its neighbours;
-	- unknown: the default correction.
-	With fixKnownTimestampIssues=False the known issues are reported but get the default correction.
-	"""
-	old_ts = np.asarray(old_ts, dtype=np.int64)
-	keys = None if keys is None else np.asarray(keys)
-	new_ts = old_ts.copy()
-	offset = 0
-	for i in range(1, len(old_ts)):
-		if old_ts[i] > new_ts[i - 1]:
-			offset = 0   # the original time fits again
-		elif old_ts[i] + offset <= new_ts[i - 1]:
-			offset = new_ts[i - 1] + 1 - old_ts[i]   # a repeat or a drop
-		new_ts[i] = old_ts[i] + offset
-	changed = np.nonzero(new_ts != old_ts)[0]
-	issues = []
-	if len(changed) == 0:
-		return new_ts, issues
-
-	def block_start(row):
-		while row > 0 and keys[row - 1] == keys[row]:
-			row -= 1
-		return row
-
-	for run in np.split(changed, np.nonzero(np.diff(changed) != 1)[0] + 1):
-		first, last = int(run[0]), int(run[-1])
-		at_end = last + 1 == len(old_ts)
-		before = new_ts[first - 1]
-		kind = "unknown"
-		if keys is not None and keys[first] == 1 and keys[first] != keys[first - 1] and \
-				(at_end or keys[last + 1] != keys[last]) and (keys[first:last + 1] == 1).all():
-			previous = block_start(first - 1)
-			if abs(int(old_ts[first]) - int(old_ts[previous])) <= 1:
-				kind = "flat_blocks"
-		elif len(run) == 1 and not at_end and old_ts[first + 1] > before:
-			copies = [n for n in range(1, first + 1) if old_ts[first - n] == old_ts[first]]
-			if copies:
-				kind, distance = "repeated", copies[0]
-		if kind != "unknown" and fixKnownTimestampIssues:
-			if kind == "repeated":
-				new_ts[first] = before + (new_ts[first + 1] - before) // 2
-			elif not at_end:
-				span = new_ts[last] - new_ts[first]
-				free = new_ts[last + 1] - before
-				if free - span >= 2:
-					new_ts[run] += before + (free - span) // 2 - new_ts[first]
-			else:
-				steps = np.diff(new_ts[run])
-				gap = int(np.median(steps)) if len(steps) else 1
-				previous = block_start(first - 1)
-				if previous > 0 and new_ts[previous] - new_ts[previous - 1] > gap:
-					gap = int(new_ts[previous] - new_ts[previous - 1])
-				new_ts[run] += before + gap - new_ts[first]
-		rows = "row %d" % first if first == last else "rows %d-%d" % (first, last)
-		detail = "%s %+d ms" % (rows, int(new_ts[first] - old_ts[first]))
-		if kind == "repeated":
-			kind = "repeated %d" % distance
-			detail += " (time of row %d)" % (first - distance)
-		issues.append((kind, (first, last), detail))
-	return new_ts, issues
-
-
-
-def corrected_frame_times(file_time, key_time=None, key_value=None, fixKnownTimestampIssues=True):
-	"""(image_file times, image_key times) in ms made strictly increasing with fix_timestamps, as
-	scanDataset does (the issues are logged there, not here); None stays None. The keys are used
-	when image_key has one value per time; equal time arrays are corrected once."""
-	def fix(times, keys):
-		times = np.asarray(times).astype(np.int64)
-		if len(times) > 1 and not np.all(np.diff(times) > 0):
-			times = fix_timestamps(times, keys, fixKnownTimestampIssues)[0]
-		return times
-	if key_time is not None and key_value is not None and len(key_value) != len(key_time):
-		key_value = None
-	key_fixed = fix(key_time, key_value) if key_time is not None else None
-	if file_time is None:
-		return None, key_fixed
-	if key_time is not None and np.array_equal(np.asarray(file_time), np.asarray(key_time)):
-		return key_fixed, key_fixed
-	return fix(file_time, None), key_fixed
-
-
-def timestamp_issue_messages(issues, fixKnownTimestampIssues=True):
-	"""One line per kind of issue of fix_timestamps, with its rows."""
-	lines = []
-	for kind in dict.fromkeys(k for k, _, _ in issues):
-		details = ", ".join(d for k, _, d in issues if k == kind)
-		if kind == "flat_blocks":
-			text = TIMESTAMP_FLAT_BLOCKS
-		elif kind.startswith("repeated"):
-			text = TIMESTAMP_REPEATED % int(kind.split()[1])
-		else:
-			text = TIMESTAMP_UNKNOWN
-		text += ": " + details
-		if kind != "unknown":
-			text += "; fixed" if fixKnownTimestampIssues else "; default correction (fixKnownTimestampIssues=False)"
-		lines.append(text)
-	return lines
-
-
-def normalize_timestamps_preserve_increase(old_ts, keys=None, fixKnownTimestampIssues=True):
-	"""Strictly increasing timestamps, the frames in their order: see fix_timestamps."""
-	return fix_timestamps(old_ts, keys, fixKnownTimestampIssues)[0]
-
-
-def getBasicDatasetInfo(h5file):
-	with _open_h5(h5file) as h5:
-		data = h5["entry/scan/data"]
-		key_time = data["image_key/time"]
-		key_value = data["image_key/value"]
-		file_time = data["image_file/time"]
-		file_value = data["image_file/value"]
-		if h5py.__version__.startswith("3"):
-			file_value = file_value.asstr()[:]
-		# Check that all four arrays have the same length
-		lengths = [len(key_time), len(key_value), len(file_time), len(file_value)]
-		if len(set(lengths)) != 1:
-			raise ValueError(f"Length mismatch: key_time={len(key_time)}, key_value={len(key_value)}, "
-							 f"file_time={len(file_time)}, file_value={len(file_value)}")
-		if not np.array_equal(key_time, file_time):
-			raise ValueError("Time arrays for image_key and image_file do not match.")
-		# Create a DataFrame
-		df = pd.DataFrame({"time": key_time, "image_key": key_value, "image_file": file_value})
-		# Check for duplicate times
-		duplicates = df[df.duplicated(subset=['time'], keep=False)].copy()
-		if not duplicates.empty:
-			# Save original indices
-			duplicates["orig_index"] = duplicates.index
-			n_duplicated_times = duplicates['time'].nunique()
-			abs_h5file = os.path.realpath(h5.filename)
-			log.warning("There is %d duplicated entries in %d distinct times in file %s." %
-				  (len(duplicates), n_duplicated_times, abs_h5file))
-			# Build key sets per time
-			times_to_duplicates = duplicates.groupby('time')['image_key'].apply(list).to_dict()
-			duplicates = duplicates.sort_values(by=['time', 'image_key'])
-			duplicates["key_set"] = duplicates["time"].map(lambda t: tuple(sorted(set(times_to_duplicates[t]))))
-			# Report per key_set
-			for key_set, group in duplicates.groupby('key_set'):
-				first_time = group['time'].iloc[0]
-				affected = group[group['time'] == first_time][['image_file', 'orig_index']]
-				formatted_key_set = ", ".join(str(k) for k in key_set)
-				# Format as "file (id=index)"
-				affected_str_list = [f"{f} (id={i})" for f, i in zip(affected['image_file'], affected['orig_index'])]
-				affected_str = ", ".join(affected_str_list)
-				log.warning(f"key_set=[{formatted_key_set}], n_times={group['time'].nunique()}, "
-					  f"first_time={first_time}, affected_files={affected_str}")
-		return df
-
-
-def insert_label(df, data, label_name, key_col="image_key"):
-	"""
-	Insert an HDF5 dataset 'label_name' into DataFrame 'df' based on timestamp alignment.
-	Handles full DataFrame or specific filtered key subsets.
-	"""
-	for part in ("time", "value"):
-		if not isinstance(data.get(f"{label_name}/{part}"), h5py.Dataset):
-			raise ValueError(f"{label_name} has no {part} dataset.")
-	time_ds = np.asarray(data[f"{label_name}/time"][()])
-	value_dataset = data[f"{label_name}/value"]
-	if h5py.check_string_dtype(value_dataset.dtype) is not None:
-		value_ds = np.asarray(value_dataset.asstr()[()], dtype=object)
-	else:
-		value_ds = np.asarray(value_dataset[()])
-	if time_ds.ndim != 1 or value_ds.ndim != 1:
-		raise ValueError(f"{label_name} time and value must be 1-D, got shapes {time_ds.shape} and {value_ds.shape}.")
-	if len(time_ds) != len(value_ds):
-		raise ValueError(f"{label_name} has {len(time_ds)} times but {len(value_ds)} values.")
-	# In the situation time_ds and value_ds are empty, raise ValueError
-	if len(time_ds) == 0:
-		raise ValueError(f"{label_name} has empty time and value datasets.")
-	# Case 1: Full DataFrame
-	if len(time_ds) == len(df):
-		if not np.all(time_ds == df["time"].values):
-			raise ValueError(f"{label_name}/time does not match df['time']")
-		df[label_name] = value_ds
-		return df
-	# Case 2: Subsets based on key filters
-	# Define candidate filters
-	filters = [
-		(df[key_col] != 2),  # exclude key==2
-		((df[key_col] != 2) & (df[key_col] != 1))  # exclude key 1 and 2
-	]
-	for mask in filters:
-		if mask.sum() == len(time_ds):
-			# Candidate subset length matches
-			if not np.all(time_ds == df.loc[mask, "time"].values):
-				raise ValueError(f"{label_name}/time shape matches subset ({mask.sum()} rows) "
-								 "but timestamps do not align exactly.")
-			df.loc[mask, label_name] = value_ds
-			return df
-	# If no matching subset found, raise error
-	raise ValueError(f"Could not insert {label_name}: no matching subset found.")
-
-
-#Note that timeOffsetSec describes the offset to be applied to the current measurements to be in sync with the frame time data
-def scanDataset(h5file, includeCurrent=False, timeOffsetSec=None, fixKnownTimestampIssues=True):
-	"""DataFrame of the frames of a scan: time, image_key, image_file and the logs of entry/scan/data.
-
-	With includeCurrent, the column current holds the beam current interpolated at the frame times
-	(constant before the first and after the last reading); raises BeamCurrentError if the file has
-	no usable beam current.
-	"""
-	if timeOffsetSec is None:
-		timeOffsetSec = 0.0
-	with _open_h5(h5file) as h5:
-		return _scanDataset(h5, includeCurrent, timeOffsetSec, fixKnownTimestampIssues)
-
-
-def _scanDataset(h5, includeCurrent, timeOffsetSec, fixKnownTimestampIssues=True):
-	abs_h5file = os.path.realpath(h5.filename)
-	# Create basic dataset info based on image_key and image_file
-	df = getBasicDatasetInfo(h5)
-	data = h5["entry/scan/data"]
-	labels = list(data.keys())
-	if len(labels) < 1:
-		raise ValueError("Error: labels count is %d!" % (len(labels)))
-	# Insert labels except image_key and image_file
-	for lab in labels:
-		if lab not in ["image_key", "image_file"]:
-			if not isinstance(data[lab], h5py.Group):
-				log.warning(f"Label '{lab}' not inserted into DataFrame from file {abs_h5file}: not a group with time and value.")
-				continue
-			try:
-				df = insert_label(df.copy(deep=True), data, lab, key_col="image_key")  # Test on a copy to avoid partial insertions
-			except ValueError as ve:
-				log.warning(f"Label '{lab}' not inserted into DataFrame from file {abs_h5file}: {ve}")
-	# Normalize timestamps to ensure strictly increasing index
-	time_values = df["time"].values.astype(np.int64)
-	if not all(np.diff(time_values) > 0):
-		normalized_time, issues = fix_timestamps(time_values, df["image_key"].to_numpy(), fixKnownTimestampIssues)
-		for text in timestamp_issue_messages(issues, fixKnownTimestampIssues):
-			log.warning("%s (%s)" % (text, abs_h5file))
-		df["time"] = normalized_time
-	# Set index to time for further processing
-	df.index = df["time"].values
-	# Convert time column to datetime in-place
-	df["time"] = pd.to_datetime(df["time"].astype(np.int64), unit="ms")
-	if includeCurrent:
-		currentFrame = beamCurrentDataset(h5, timeOffsetSec=timeOffsetSec)
-		if currentFrame.empty:
-			raise BeamCurrentError(f"No beam current readings in {abs_h5file}, can not include the current.")
-		current_times = currentFrame.index.to_numpy().astype(np.float64)
-		frame_times = df.index.to_numpy().astype(np.float64)
-		outside = int(np.sum(frame_times < current_times[0]) + np.sum(frame_times > current_times[-1]))
-		if outside > 0:
-			log.warning("%d of %d frames of %s are outside the beam current readings; the first/last reading is used for them." % (outside, len(df), abs_h5file))
-		# Linear interpolation between the readings, constant outside of them
-		df["current"] = np.interp(frame_times, current_times, currentFrame["current"].to_numpy(dtype=np.float64))
-	df = df.sort_values("time", ascending=True)
-	return df
-
-
-def imageDataset(h5file, image_key=0, includeCurrent=True, includePixelShift=False, overrideMagnification=None,
-				 fixKnownTimestampIssues=True):
-	with _open_h5(h5file) as h5:
-		return _imageDataset(h5, image_key, includeCurrent, includePixelShift, overrideMagnification, fixKnownTimestampIssues)
-
-
-def _imageDataset(h5, image_key, includeCurrent, includePixelShift, overrideMagnification, fixKnownTimestampIssues=True):
-	h5file = os.path.realpath(h5.filename)
-	df = scanDataset(h5, includeCurrent, fixKnownTimestampIssues=fixKnownTimestampIssues)
-	df = df.loc[df["image_key"] == image_key]
-	df = df.assign(frame_ind=np.arange(len(df)))
-	if includePixelShift:
-		if "s_stage_x" not in df.columns:
-			raise ValueError("No s_stage_x log in %s, can not compute the pixel shift." % h5file)
-		camera_group = _camera_group(h5)
-		if camera_group is None:
-			raise ValueError("There is no entry/hardware/camera or entry/hardware/camera1 entry in %s." % h5file)
-		values = _camera_values(camera_group, read_group_scalars(camera_group), overrideMagnification)
-		if values["pixelsize"] is None or values["magnification"] is None:
-			raise ValueError("No usable camera pixelsize and magnification in %s, can not compute the pixel shift." % h5file)
-		pix_size = values["pixelsize"] / values["magnification"]
-		# zeropos = df["s_stage_x"].iloc[0]#Previous
-		zeropos = 0.5 * (df["s_stage_x"].max() + df["s_stage_x"].min())
-		# print("p0 =%f min=%f max=%f zeropos=%f pix_size=%f"%(df["s_stage_x"].iloc[0], df["s_stage_x"].min(), df["s_stage_x"].max(), zeropos, pix_size))
-		pixShifts = (df["s_stage_x"] - zeropos) / pix_size
-		df = df.assign(pixel_shift=pixShifts)
-	return df
 
 def scanDatasetNanotomography(logfile, folder, includeCurrent=False):
 	"""
@@ -896,3 +579,343 @@ def scanDatasetNanotomography(logfile, folder, includeCurrent=False):
 	if not includeCurrent:
 		df.drop(columns=["current"], inplace=True)
 	return df
+
+
+# ---------------- timestamps
+
+
+TIMESTAMP_FLAT_BLOCKS = ("Timestamp issue: found known structure of wrongly positioned flat field blocks within "
+						 "acquisition")
+
+
+TIMESTAMP_REPEATED = "Timestamp issue: found repeated value with %d items offset from original"
+
+
+TIMESTAMP_UNKNOWN = "Timestamp issue: unknown issue encountered proceeding with default correction"
+
+
+def fix_timestamps(old_ts, keys=None, fixKnownTimestampIssues=True):
+	"""(strictly increasing timestamps, issues) for frames logged with timestamps that repeat or drop
+	back; the frames keep their order. issues: [(kind, (first row, last row), detail)] with kind
+	"flat_blocks", "repeated" or "unknown"; timestamp_issue_messages() makes the log lines.
+
+	Default correction: from a zero or negative step on, the frames are moved 1 ms behind the frame
+	before them keeping their steps, until an original time fits again (is later than the corrected
+	time before it); so only frames with a wrong time are re-timed. Each such run is classified:
+	- flat_blocks (known structure, needs keys = image_key): the run is exactly a flat field block
+	  (key 1) whose first time is the first time of the block before it (seen in P05/P07 files: the
+	  flats after the darks and the flats after the projections); fixed by centring it between the
+	  frames before and after it, or at the end of the scan by putting it after the frame before it
+	  with the pause of the transition into that frame's block (moving the object out as long as in). Checked against scans with correct timestamps: the darks -> flats
+	  pause is a bit shorter than the flats -> projections pause, and the projections -> flats pause
+	  is about their mean, which is what centring the first flat block and reusing its pause gives.
+	  The P07 software was fixed around 05/2026; newer P07 datasets should not be affected;
+	- repeated (known): a single frame with exactly the time of the frame n rows before it, the frames
+	  around it on time (seen with n = 20); fixed by putting it halfway between its neighbours;
+	- unknown: the default correction.
+	With fixKnownTimestampIssues=False the known issues are reported but get the default correction.
+	"""
+	old_ts = np.asarray(old_ts, dtype=np.int64)
+	keys = None if keys is None else np.asarray(keys)
+	new_ts = old_ts.copy()
+	offset = 0
+	for i in range(1, len(old_ts)):
+		if old_ts[i] > new_ts[i - 1]:
+			offset = 0   # the original time fits again
+		elif old_ts[i] + offset <= new_ts[i - 1]:
+			offset = new_ts[i - 1] + 1 - old_ts[i]   # a repeat or a drop
+		new_ts[i] = old_ts[i] + offset
+	changed = np.nonzero(new_ts != old_ts)[0]
+	issues = []
+	if len(changed) == 0:
+		return new_ts, issues
+
+	def block_start(row):
+		while row > 0 and keys[row - 1] == keys[row]:
+			row -= 1
+		return row
+
+	for run in np.split(changed, np.nonzero(np.diff(changed) != 1)[0] + 1):
+		first, last = int(run[0]), int(run[-1])
+		at_end = last + 1 == len(old_ts)
+		before = new_ts[first - 1]
+		kind = "unknown"
+		if keys is not None and keys[first] == 1 and keys[first] != keys[first - 1] and \
+				(at_end or keys[last + 1] != keys[last]) and (keys[first:last + 1] == 1).all():
+			previous = block_start(first - 1)
+			if abs(int(old_ts[first]) - int(old_ts[previous])) <= 1:
+				kind = "flat_blocks"
+		elif len(run) == 1 and not at_end and old_ts[first + 1] > before:
+			copies = [n for n in range(1, first + 1) if old_ts[first - n] == old_ts[first]]
+			if copies:
+				kind, distance = "repeated", copies[0]
+		if kind != "unknown" and fixKnownTimestampIssues:
+			if kind == "repeated":
+				new_ts[first] = before + (new_ts[first + 1] - before) // 2
+			elif not at_end:
+				span = new_ts[last] - new_ts[first]
+				free = new_ts[last + 1] - before
+				if free - span >= 2:
+					new_ts[run] += before + (free - span) // 2 - new_ts[first]
+			else:
+				steps = np.diff(new_ts[run])
+				gap = int(np.median(steps)) if len(steps) else 1
+				previous = block_start(first - 1)
+				if previous > 0 and new_ts[previous] - new_ts[previous - 1] > gap:
+					gap = int(new_ts[previous] - new_ts[previous - 1])
+				new_ts[run] += before + gap - new_ts[first]
+		rows = "row %d" % first if first == last else "rows %d-%d" % (first, last)
+		detail = "%s %+d ms" % (rows, int(new_ts[first] - old_ts[first]))
+		if kind == "repeated":
+			kind = "repeated %d" % distance
+			detail += " (time of row %d)" % (first - distance)
+		issues.append((kind, (first, last), detail))
+	return new_ts, issues
+
+
+def corrected_frame_times(file_time, key_time=None, key_value=None, fixKnownTimestampIssues=True):
+	"""(image_file times, image_key times) in ms made strictly increasing with fix_timestamps, as
+	scanDataset does (the issues are logged there, not here); None stays None. The keys are used
+	when image_key has one value per time; equal time arrays are corrected once."""
+	def fix(times, keys):
+		times = np.asarray(times).astype(np.int64)
+		if len(times) > 1 and not np.all(np.diff(times) > 0):
+			times = fix_timestamps(times, keys, fixKnownTimestampIssues)[0]
+		return times
+	if key_time is not None and key_value is not None and len(key_value) != len(key_time):
+		key_value = None
+	key_fixed = fix(key_time, key_value) if key_time is not None else None
+	if file_time is None:
+		return None, key_fixed
+	if key_time is not None and np.array_equal(np.asarray(file_time), np.asarray(key_time)):
+		return key_fixed, key_fixed
+	return fix(file_time, None), key_fixed
+
+
+def timestamp_issue_messages(issues, fixKnownTimestampIssues=True):
+	"""One line per kind of issue of fix_timestamps, with its rows."""
+	lines = []
+	for kind in dict.fromkeys(k for k, _, _ in issues):
+		details = ", ".join(d for k, _, d in issues if k == kind)
+		if kind == "flat_blocks":
+			text = TIMESTAMP_FLAT_BLOCKS
+		elif kind.startswith("repeated"):
+			text = TIMESTAMP_REPEATED % int(kind.split()[1])
+		else:
+			text = TIMESTAMP_UNKNOWN
+		text += ": " + details
+		if kind != "unknown":
+			text += "; fixed" if fixKnownTimestampIssues else "; default correction (fixKnownTimestampIssues=False)"
+		lines.append(text)
+	return lines
+
+
+def normalize_timestamps_preserve_increase(old_ts, keys=None, fixKnownTimestampIssues=True):
+	"""Strictly increasing timestamps, the frames in their order: see fix_timestamps."""
+	return fix_timestamps(old_ts, keys, fixKnownTimestampIssues)[0]
+
+
+# ---------------- reading HDF5 values
+
+
+def read_scalar_h5(item):
+	"""
+	Read a scalar value from an h5py dataset robustly.
+
+	Handles:
+	  - shape ()		   -> 0-d array / numpy scalar
+	  - shape (1,)		   -> 1-element array
+	  - bytes / np.bytes_  -> decoded to str (utf-8, replace on error)
+	  - numpy scalars	   -> converted to native Python types
+	Returns None for empty datasets.
+	"""
+	val = item[()]
+	# Unwrap 1-element arrays; keep 0-d as-is
+	if isinstance(val, np.ndarray):
+		if val.shape == (1,):
+			val = val[0]
+		elif val.shape == ():
+			val = val.item()
+		elif val.size == 0:
+			return None
+		# else: leave as ndarray (caller may want the array)
+	# numpy scalar -> Python scalar (np.bytes_.item() returns bytes, handled below)
+	if isinstance(val, np.generic):
+		val = val.item()
+	# Decode bytes to str
+	if isinstance(val, (bytes, bytearray)):
+		try:
+			val = val.decode("utf-8")
+		except UnicodeDecodeError:
+			val = val.decode("utf-8", errors="replace")
+	return val
+
+
+#Sometimes values as entry/beamline/experiment are stored as () shape but sometimes as (1,) shape,
+#or as an attribute of the group; this function extracts the string value from any of these.
+def extractStringEntry(h5, path):
+	# an attribute of the parent group (other than NX_class), else a dataset
+	parent, _, name = path.rpartition("/")
+	parent_group = h5 if parent == "" else h5.get(parent)
+	if name != "NX_class" and isinstance(parent_group, h5py.Group) and name in parent_group.attrs:
+		value = _decode_attribute_value(parent_group.attrs[name])
+	elif path in h5:
+		value = read_scalar_h5(h5[path])
+	else:
+		log.warning("The path '%s' does not exist in %s." % (path, os.path.realpath(h5.filename)))
+		return None
+	if value is None:
+		log.warning("The path '%s' is empty in %s." % (path, os.path.realpath(h5.filename)))
+		return None
+	return value if isinstance(value, str) else str(value)
+
+
+def read_group_scalars(group):
+	"""The datasets (read_scalar_h5) and the attributes other than NX_class of a group as a dict; an
+	attribute wins over a dataset of the same name. Subgroups are skipped."""
+	out = {}
+	for key, item in group.items():
+		if isinstance(item, h5py.Dataset):
+			out[key] = read_scalar_h5(item)
+	out.update({key: _decode_attribute_value(value) for key, value in group.attrs.items() if key != "NX_class"})
+	return out
+
+
+# ================================================================================================
+# Helpers, grouped by the functions that use them
+# ================================================================================================
+
+
+# ---------------- all analyses: opening the file
+
+
+@contextlib.contextmanager
+def _open_h5(h5file):
+	"""The HDF5 file of a file name (opened and closed here), or the file of an open h5py.File or
+	h5py.Group (left open). All functions of this module read through it, so a function opens the
+	file once, also for the functions it calls."""
+	if isinstance(h5file, (str, os.PathLike)):
+		with h5py.File(h5file, "r") as h5:
+			yield h5
+	else:
+		yield h5file.file
+
+
+# ---------------- getExperimentInfo, imageDataset: camera values
+
+
+def _find_camera_group(h5):
+	"""entry/hardware/camera, else entry/hardware/camera1, else None."""
+	for path in ("entry/hardware/camera", "entry/hardware/camera1"):
+		if path in h5:
+			return h5[path]
+	return None
+
+
+def _read_camera_values(camera_group, camera, overrideMagnification=None):
+	"""Camera numbers under the names of the newer files, None where missing, empty or not a number.
+
+	Older names: px_size/pixel_size, senzor_xsize/senzor_ysize, roi_xsize/roi_ysize. The
+	magnification is taken from overrideMagnification, the camera group or its calibration subgroup;
+	a magnification of 0 counts as missing.
+	"""
+	def first(*keys):
+		for key in keys:
+			value = _to_finite_float(camera.get(key))
+			if value is not None:
+				return value
+		return None
+	values = {
+		"pixelsize": first("pixel_size", "px_size", "pixelsize"),
+		"sensorsize_x": first("senzor_xsize", "sensorsize_x"),
+		"sensorsize_y": first("senzor_ysize", "sensorsize_y"),
+		"roi_width": first("roi_xsize", "roi_width"),
+		"roi_height": first("roi_ysize", "roi_height"),
+	}
+	magnification = _to_finite_float(overrideMagnification) if overrideMagnification is not None else first("magnification")
+	if magnification is None and overrideMagnification is None and isinstance(camera_group.get("calibration"), h5py.Group):
+		magnification = _to_finite_float(read_group_scalars(camera_group["calibration"]).get("magnification"))
+	values["magnification"] = magnification if magnification else None
+	return values
+
+
+def _to_finite_float(value):
+	"""value as a finite float if it is a single number (not bool), else None."""
+	if isinstance(value, np.ndarray) and value.size == 1:
+		value = value.reshape(()).item()
+	if isinstance(value, np.generic):
+		value = value.item()
+	if isinstance(value, bool) or not isinstance(value, (int, float)):
+		return None
+	value = float(value)
+	return value if np.isfinite(value) else None
+
+
+# ---------------- scanDataset: log columns
+
+
+def insert_label(df, data, label_name, key_col="image_key"):
+	"""
+	Insert an HDF5 dataset 'label_name' into DataFrame 'df' based on timestamp alignment.
+	Handles full DataFrame or specific filtered key subsets.
+	"""
+	for part in ("time", "value"):
+		if not isinstance(data.get(f"{label_name}/{part}"), h5py.Dataset):
+			raise ValueError(f"{label_name} has no {part} dataset.")
+	time_ds = np.asarray(data[f"{label_name}/time"][()])
+	value_dataset = data[f"{label_name}/value"]
+	if h5py.check_string_dtype(value_dataset.dtype) is not None:
+		value_ds = np.asarray(value_dataset.asstr()[()], dtype=object)
+	else:
+		value_ds = np.asarray(value_dataset[()])
+	if time_ds.ndim != 1 or value_ds.ndim != 1:
+		raise ValueError(f"{label_name} time and value must be 1-D, got shapes {time_ds.shape} and {value_ds.shape}.")
+	if len(time_ds) != len(value_ds):
+		raise ValueError(f"{label_name} has {len(time_ds)} times but {len(value_ds)} values.")
+	# In the situation time_ds and value_ds are empty, raise ValueError
+	if len(time_ds) == 0:
+		raise ValueError(f"{label_name} has empty time and value datasets.")
+	# Case 1: Full DataFrame
+	if len(time_ds) == len(df):
+		if not np.all(time_ds == df["time"].values):
+			raise ValueError(f"{label_name}/time does not match df['time']")
+		df[label_name] = value_ds
+		return df
+	# Case 2: Subsets based on key filters
+	# Define candidate filters
+	filters = [
+		(df[key_col] != 2),  # exclude key==2
+		((df[key_col] != 2) & (df[key_col] != 1))  # exclude key 1 and 2
+	]
+	for mask in filters:
+		if mask.sum() == len(time_ds):
+			# Candidate subset length matches
+			if not np.all(time_ds == df.loc[mask, "time"].values):
+				raise ValueError(f"{label_name}/time shape matches subset ({mask.sum()} rows) "
+								 "but timestamps do not align exactly.")
+			df.loc[mask, label_name] = value_ds
+			return df
+	# If no matching subset found, raise error
+	raise ValueError(f"Could not insert {label_name}: no matching subset found.")
+
+
+# ---------------- extractStringEntry, read_group_scalars: attribute values
+
+
+def _decode_attribute_value(value):
+	"""An HDF5 attribute as a python value: numpy to python, bytes to str, arrays to lists; one-element
+	sequences collapse to their element (older files store attributes as (1,) object arrays)."""
+	if isinstance(value, np.ndarray):
+		return _decode_attribute_value(value.tolist())
+	if isinstance(value, np.generic):
+		return _decode_attribute_value(value.item())
+	if isinstance(value, (bytes, bytearray)):
+		try:
+			return value.decode("utf-8")
+		except UnicodeDecodeError:
+			return value.decode("utf-8", errors="replace")
+	if isinstance(value, (list, tuple)):
+		if len(value) == 1:
+			return _decode_attribute_value(value[0])
+		return [_decode_attribute_value(v) for v in value]
+	return value
